@@ -12,22 +12,17 @@ import os
 # Import custom modules
 from data_fetcher import DataFetcher
 from predictor import BudgetPredictor
-from utils import format_currency, calculate_growth_rate, get_top_categories
+from utils import format_currency, calculate_growth_rate, get_top_categories, adjust_to_constant_euros, get_eu_languages, translate, generate_insights_i18n
 
 # Configure page
 st.set_page_config(
-    page_title="Budget de l'État Français - Analyse et Prédictions",
+    page_title="Budget Horizon",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Title and description
-st.title("🏛️ Évolution du Budget de l'État Français (2005-2025)")
-st.markdown("""
-Cette application analyse l'évolution des dépenses budgétaires de l'État français sur 20 ans 
-et propose des prédictions basées sur l'intelligence artificielle.
-""")
+# Title and description are set after language selection below
 
 # Initialize session state
 if 'data_loaded' not in st.session_state:
@@ -38,26 +33,59 @@ if 'predictions' not in st.session_state:
     st.session_state.predictions = None
 
 # Sidebar configuration
-st.sidebar.header("⚙️ Configuration")
+lang_options = get_eu_languages()
+lang_codes = [opt["code"] for opt in lang_options]
+lang_names = {opt["code"]: opt["name"] for opt in lang_options}
+current_lang = st.sidebar.selectbox(
+    translate("sidebar.language", "fr", "Langue"),
+    options=lang_codes,
+    index=lang_codes.index("fr") if "fr" in lang_codes else 0,
+    format_func=lambda c: lang_names.get(c, c)
+)
+st.sidebar.header(translate("sidebar.config", current_lang, "Configuration"))
+
+# Update title/description based on selected language
+st.title("🏛️ " + translate("title.app", current_lang, "Budget de l'État Français - Analyse et Prédictions"))
+st.markdown(translate("desc.app", current_lang, "Cette application analyse l'évolution des dépenses budgétaires de l'État français sur 20 ans et propose des prédictions basées sur l'intelligence artificielle."))
+# Inflation adjustment option
+adjust_inflation = st.sidebar.checkbox(
+    translate("toggle.inflation", current_lang, "Ajuster pour l'inflation (euros constants)"), value=False,
+    help=translate("toggle.inflation", current_lang, "Affiche les montants en euros constants en utilisant un indice des prix (CPI).")
+)
+show_governments = st.sidebar.checkbox(
+    translate("toggle.gov_periods", current_lang, "Afficher périodes gouvernementales"),
+    value=False,
+    help=translate("toggle.gov_periods", current_lang, "Superpose les périodes des gouvernements (Premiers ministres) sur les graphiques temporels.")
+)
+show_key_events = st.sidebar.checkbox(
+    translate("toggle.events", current_lang, "Afficher événements majeurs"),
+    value=True,
+    help=translate("toggle.events", current_lang, "Affiche des marqueurs pour des événements macro-économiques ou politiques impactant le budget.")
+)
+include_debt_interest = st.sidebar.checkbox(
+    translate("toggle.debt", current_lang, "Inclure charge de la dette (intérêts)"),
+    value=True,
+    help=translate("toggle.debt", current_lang, "Ajoute la mission 'Charge de la dette de l'État' aux montants.")
+)
 
 # Data source selection
 data_source = st.sidebar.selectbox(
-    "Source de données",
+    translate("sidebar.data_source", current_lang, "Source de données"),
     ["data.gouv.fr", "INSEE", "data.economie.gouv.fr"],
-    help="Choisir la source de données gouvernementales"
+    help=translate("sidebar.data_source", current_lang, "Choisir la source de données gouvernementales")
 )
 
 # Year range selection
 year_range = st.sidebar.slider(
-    "Plage d'années",
+    translate("sidebar.year_range", current_lang, "Plage d'années"),
     min_value=2005,
     max_value=2025,
     value=(2005, 2025),
-    help="Sélectionner la période d'analyse"
+    help=translate("sidebar.year_range", current_lang, "Sélectionner la période d'analyse")
 )
 
 # Load data button
-if st.sidebar.button("🔄 Charger les données", type="primary"):
+if st.sidebar.button("🔄 " + translate("sidebar.load_data", current_lang, "Charger les données"), type="primary"):
     with st.spinner("Chargement des données budgétaires..."):
         try:
             fetcher = DataFetcher()
@@ -98,6 +126,94 @@ if not st.session_state.data_loaded:
 else:
     df = st.session_state.budget_data
     predictions_df = st.session_state.predictions
+    montant_label = "Montant (Milliards €)"
+    # Define government (Prime Minister) periods (years inclusive, coarse)
+    government_periods = [
+        {"label": "Gouv. de Villepin", "start": 2005, "end": 2007, "color": "#9b59b6"},
+        {"label": "Gouv. Fillon", "start": 2007, "end": 2012, "color": "#2980b9"},
+        {"label": "Gouv. Ayrault", "start": 2012, "end": 2014, "color": "#16a085"},
+        {"label": "Gouv. Valls", "start": 2014, "end": 2016, "color": "#27ae60"},
+        {"label": "Gouv. Cazeneuve", "start": 2016, "end": 2017, "color": "#2c3e50"},
+        {"label": "Gouv. Philippe", "start": 2017, "end": 2020, "color": "#f39c12"},
+        {"label": "Gouv. Castex", "start": 2020, "end": 2022, "color": "#d35400"},
+        {"label": "Gouv. Borne", "start": 2022, "end": 2024, "color": "#c0392b"},
+        {"label": "Gouv. Attal", "start": 2024, "end": 2030, "color": "#8e44ad"},
+    ]
+
+    # Key events (single-year markers)
+    key_events = [
+        {"year": 2008, "label": "Crise financière mondiale"},
+        {"year": 2009, "label": "Récession et relance"},
+        {"year": 2011, "label": "Crise dette zone euro"},
+        {"year": 2015, "label": "Sécurité intérieure renforcée"},
+        {"year": 2020, "label": "COVID-19: plans de soutien"},
+        {"year": 2022, "label": "Crise énergie/inflation"},
+    ]
+
+    def add_period_overlays(fig, periods, min_year, max_year):
+        if not show_governments:
+            return
+        for p in periods:
+            x0 = max(min_year, p["start"])
+            x1 = min(max_year, p["end"])
+            if x1 <= min_year or x0 >= max_year:
+                continue
+            fig.add_vrect(
+                x0=x0, x1=x1,
+                fillcolor=p["color"], opacity=0.08, line_width=0,
+                annotation_text=p["label"], annotation_position="top left"
+            )
+
+    def add_event_markers(fig, events, min_year, max_year):
+        if not show_key_events:
+            return
+        for e in events:
+            x = int(e["year"])
+            if x < min_year or x > max_year:
+                continue
+            fig.add_vline(
+                x=x,
+                line_dash="dot",
+                line_color="#7f8c8d",
+            )
+            fig.add_annotation(
+                x=x,
+                y=1.02,
+                xref="x",
+                yref="paper",
+                text=e["label"],
+                showarrow=False,
+                font=dict(size=10, color="#7f8c8d"),
+                align="left",
+            )
+
+    # Apply inflation adjustment if requested
+    if adjust_inflation and df is not None and not df.empty:
+        base_year_choice = st.sidebar.number_input(
+            "Année de base (euros constants)",
+            min_value=int(df['Année'].min()),
+            max_value=int(max(df['Année'].max(), 2030 if predictions_df is not None and not predictions_df.empty else df['Année'].max())),
+            value=int(df['Année'].max()),
+            step=1
+        )
+        fetcher = DataFetcher()
+        cpi_df = fetcher.get_cpi_series(
+            int(df['Année'].min()),
+            int(max(df['Année'].max(), 2030 if predictions_df is not None and not predictions_df.empty else df['Année'].max()))
+        )
+        df = adjust_to_constant_euros(df, cpi_df, base_year=base_year_choice, amount_col='Montant')
+        if predictions_df is not None and not predictions_df.empty:
+            predictions_df = adjust_to_constant_euros(predictions_df, cpi_df, base_year=base_year_choice, amount_col='Montant_Prédit')
+        montant_label = f"Montant (Milliards €, euros constants {base_year_choice})"
+
+    # Optionally include debt interest as a mission
+    if include_debt_interest and df is not None and not df.empty:
+        fetcher = DataFetcher()
+        debt_series = fetcher.get_debt_interest_series(int(df['Année'].min()), int(df['Année'].max()))
+        if adjust_inflation and 'cpi_df' in locals():
+            debt_series = adjust_to_constant_euros(debt_series, cpi_df, base_year=base_year_choice, amount_col='Montant')
+        debt_series['Mission'] = "Charge de la dette de l'État"
+        df = pd.concat([df, debt_series[['Année', 'Mission', 'Montant']]], ignore_index=True)
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -112,7 +228,7 @@ else:
     
     with col1:
         st.metric(
-            "Budget Total 2025",
+            f"Budget Total {latest_year}",
             format_currency(latest_total),
             f"{total_growth:.1f}% depuis {earliest_year}"
         )
@@ -149,15 +265,16 @@ else:
     
     # Tabs for different views
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📈 Évolution Temporelle", 
-        "🏛️ Comparaison Missions", 
-        "📊 Répartition Budgétaire",
-        "🔮 Prédictions",
-        "📋 Analyse Détaillée"
+        "📈 " + translate("tab.evolution", current_lang, "Évolution Temporelle"),
+        "🏛️ " + translate("tab.compare", current_lang, "Comparaison Missions"),
+        "📊 " + translate("tab.split", current_lang, "Répartition Budgétaire"),
+        "🔮 " + translate("tab.pred", current_lang, "Prédictions"),
+        "📋 " + translate("tab.details", current_lang, "Analyse Détaillée"),
     ])
     
     with tab1:
-        st.subheader("Évolution des Dépenses par Mission (2005-2025)")
+        st.subheader(translate("header.evolution_missions", current_lang, "Évolution des Dépenses par Mission (2005-2025)"))
+        st.markdown(translate("analysis.evolution", current_lang, "Cette vue met en évidence l'évolution de chaque mission dans le temps."))
         
         # Interactive line chart
         fig_evolution = px.line(
@@ -165,18 +282,20 @@ else:
             x='Année', 
             y='Montant', 
             color='Mission',
-            title="Évolution des Dépenses Budgétaires par Mission",
+            title=translate("title.mission_evolution", current_lang, "Évolution des Dépenses Budgétaires par Mission"),
             labels={
-                'Montant': 'Montant (Milliards €)',
+                'Montant': montant_label,
                 'Année': 'Année',
                 'Mission': 'Mission'
             }
         )
         fig_evolution.update_layout(height=600, hovermode='x unified')
+        add_period_overlays(fig_evolution, government_periods, int(df['Année'].min()), int(df['Année'].max()))
+        add_event_markers(fig_evolution, key_events, int(df['Année'].min()), int(df['Année'].max()))
         st.plotly_chart(fig_evolution, use_container_width=True)
         
         # Growth rate analysis
-        st.subheader("Taux de Croissance Annuel par Mission")
+        st.subheader(translate("header.growth_rate", current_lang, "Taux de Croissance Annuel par Mission"))
         growth_data = []
         for mission in df['Mission'].unique():
             mission_data = df[df['Mission'] == mission].sort_values('Année')
@@ -200,16 +319,32 @@ else:
                 growth_df,
                 x='Mission',
                 y='Croissance Annuelle (%)',
-                title="Taux de Croissance Annuel Moyen par Mission",
+                title=translate("title.growth_rate", current_lang, "Taux de Croissance Annuel Moyen par Mission"),
                 color='Croissance Annuelle (%)',
                 color_continuous_scale='RdYlBu_r'
             )
-            fig_growth.update_xaxis(tickangle=45)
+            fig_growth.update_xaxes(tickangle=45)
             fig_growth.update_layout(height=500)
             st.plotly_chart(fig_growth, use_container_width=True)
+
+        # Total budget evolution (all missions)
+        st.subheader(translate("title.total_budget", current_lang, "Évolution du Budget Total de l'État"))
+        total_df = df.groupby('Année', as_index=False)['Montant'].sum()
+        fig_total = px.line(
+            total_df,
+            x='Année',
+            y='Montant',
+            title="Évolution du Budget Total",
+            labels={'Montant': montant_label, 'Année': 'Année'}
+        )
+        fig_total.update_layout(height=400, hovermode='x unified')
+        add_period_overlays(fig_total, government_periods, int(df['Année'].min()), int(df['Année'].max()))
+        add_event_markers(fig_total, key_events, int(df['Année'].min()), int(df['Année'].max()))
+        st.plotly_chart(fig_total, use_container_width=True)
     
     with tab2:
-        st.subheader("Comparaison des Missions Budgétaires")
+        st.subheader(translate("header.compare", current_lang, "Comparaison des Missions Budgétaires"))
+        st.markdown(translate("analysis.compare", current_lang, "Comparez les missions pour une année donnée afin d'identifier les postes les plus importants et leurs poids relatifs."))
         
         # Select year for comparison
         comparison_year = st.selectbox(
@@ -226,8 +361,8 @@ else:
             x='Montant',
             y='Mission',
             orientation='h',
-            title=f"Répartition des Dépenses par Mission - {comparison_year}",
-            labels={'Montant': 'Montant (Milliards €)', 'Mission': 'Mission'},
+            title=translate("title.comparison", current_lang, "Répartition des Dépenses par Mission") + f" - {comparison_year}",
+            labels={'Montant': montant_label, 'Mission': 'Mission'},
             text='Montant'
         )
         fig_comparison.update_traces(texttemplate='%{text:.1f}B€', textposition='outside')
@@ -258,7 +393,8 @@ else:
             )
     
     with tab3:
-        st.subheader("Analyse de la Répartition Budgétaire")
+        st.subheader(translate("header.split", current_lang, "Analyse de la Répartition Budgétaire"))
+        st.markdown(translate("analysis.split", current_lang, "Les aires empilées montrent l'évolution de la composition du budget au fil des années."))
         
         # Stacked area chart
         pivot_df = df.pivot(index='Année', columns='Mission', values='Montant').fillna(0)
@@ -276,12 +412,14 @@ else:
             ))
         
         fig_stacked.update_layout(
-            title="Évolution de la Répartition Budgétaire (Aires Empilées)",
+            title=translate("title.stacked_area", current_lang, "Évolution de la Répartition Budgétaire (Aires Empilées)"),
             xaxis_title="Année",
-            yaxis_title="Montant (Milliards €)",
+            yaxis_title=montant_label,
             height=600,
             hovermode='x unified'
         )
+        add_period_overlays(fig_stacked, government_periods, int(df['Année'].min()), int(df['Année'].max()))
+        add_event_markers(fig_stacked, key_events, int(df['Année'].min()), int(df['Année'].max()))
         st.plotly_chart(fig_stacked, use_container_width=True)
         
         # Percentage evolution
@@ -299,7 +437,7 @@ else:
             ))
         
         fig_pct.update_layout(
-            title="Évolution de la Répartition Budgétaire (Pourcentages)",
+            title=translate("title.percentage_evolution", current_lang, "Évolution de la Répartition Budgétaire (Pourcentages)"),
             xaxis_title="Année",
             yaxis_title="Pourcentage (%)",
             height=600,
@@ -308,7 +446,8 @@ else:
         st.plotly_chart(fig_pct, use_container_width=True)
     
     with tab4:
-        st.subheader("🔮 Prédictions Budgétaires 2026-2030")
+        st.subheader("🔮 " + translate("header.pred", current_lang, "Prédictions Budgétaires 2026-2030"))
+        st.markdown(translate("analysis.pred", current_lang, "Les prédictions prolongent les tendances récentes avec des contraintes."))
         
         if predictions_df is not None and not predictions_df.empty:
             # Combine historical and predicted data
@@ -329,9 +468,9 @@ else:
                 y='Montant_Prédit',
                 color='Mission',
                 line_dash='Type',
-                title="Évolution Historique et Prédictions Budgétaires",
+                title=translate("title.history_predictions", current_lang, "Évolution Historique et Prédictions Budgétaires"),
                 labels={
-                    'Montant_Prédit': 'Montant (Milliards €)',
+                    'Montant_Prédit': montant_label,
                     'Année': 'Année',
                     'Mission': 'Mission',
                     'Type': 'Type de Données'
@@ -347,10 +486,12 @@ else:
             )
             
             fig_pred.update_layout(height=600, hovermode='x unified')
+            add_period_overlays(fig_pred, government_periods, int(combined_df['Année'].min()), int(combined_df['Année'].max()))
+            add_event_markers(fig_pred, key_events, int(combined_df['Année'].min()), int(combined_df['Année'].max()))
             st.plotly_chart(fig_pred, use_container_width=True)
             
             # Prediction summary
-            st.subheader("Résumé des Prédictions 2030")
+            st.subheader(translate("header.pred_summary", current_lang, "Résumé des Prédictions 2030"))
             
             pred_2030 = predictions_df[predictions_df['Année'] == 2030]
             hist_2025 = df[df['Année'] == 2025]
@@ -382,10 +523,35 @@ else:
             st.warning("⚠️ Prédictions en cours de génération. Veuillez patienter...")
     
     with tab5:
-        st.subheader("📋 Analyse Détaillée et Export")
+        st.subheader("📋 " + translate("header.details_export", current_lang, "Analyse Détaillée et Export"))
+        st.markdown(translate("analysis.details", current_lang, "Utilisez le résumé et les tableaux de croissance pour approfondir les déterminants."))
+        # Localized insights
+        insights_msgs = generate_insights_i18n(df, predictions_df, current_lang)
+        for msg in insights_msgs:
+            st.markdown("- " + msg)
+        # Data sources section
+        st.markdown("---")
+        st.subheader(translate("sources.title", current_lang, "📚 Sources de Données et Références"))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(translate("sources.budget", current_lang, "**Données Budgétaires** : Missions du budget de l'État français depuis data.gouv.fr"))
+            st.markdown(translate("sources.cpi", current_lang, "**Données d'Inflation** : Indice des Prix à la Consommation (IPC) de l'INSEE"))
+        with col2:
+            st.markdown(translate("sources.debt", current_lang, "**Intérêts de la Dette** : Paiements d'intérêts de la dette publique modélisés"))
+            st.markdown(translate("sources.methodology", current_lang, "**Méthodologie** : Traitement des données, ajustement inflationniste et prédictions"))
+        
+        st.markdown(translate("sources.disclaimer", current_lang, "**Avertissement** : Cette analyse est à des fins d'information. Consultez les sources gouvernementales officielles pour les chiffres budgétaires officiels."))
+        
+        # Links to official sources
+        st.markdown("**🔗 Official Sources:**")
+        st.markdown("- [data.gouv.fr - Budget de l'État](https://www.data.gouv.fr/fr/datasets/budget-de-letat/)")
+        st.markdown("- [INSEE - Indices des Prix](https://www.insee.fr/fr/statistiques/serie/000436391)")
+        st.markdown("- [Ministère de l'Économie - Finances Publiques](https://www.economie.gouv.fr/finances-publiques)")
+        st.markdown("- [Banque de France - Dette Publique](https://www.banque-france.fr/statistiques/dette-publique)")
         
         # Top growing categories
-        st.subheader("🚀 Missions en Forte Croissance")
+        st.subheader("🚀 " + translate("header.top_growth", current_lang, "Missions en Forte Croissance"))
         
         growth_analysis = []
         for mission in df['Mission'].unique():
@@ -409,7 +575,7 @@ else:
         st.dataframe(growth_analysis_df, use_container_width=True)
         
         # Statistical summary
-        st.subheader("📊 Résumé Statistique")
+        st.subheader("📊 " + translate("header.stats_summary", current_lang, "Résumé Statistique"))
         
         col1, col2 = st.columns(2)
         
@@ -435,7 +601,7 @@ else:
                 )
         
         # Data export
-        st.subheader("💾 Export des Données")
+        st.subheader("💾 " + translate("export.header", current_lang, "Export des Données"))
         
         col1, col2, col3 = st.columns(3)
         
@@ -443,7 +609,7 @@ else:
             # Export historical data
             csv_historical = df.to_csv(index=False, encoding='utf-8')
             st.download_button(
-                label="📥 Télécharger Données Historiques (CSV)",
+                label="📥 " + translate("button.download_historical", current_lang, "Télécharger Données Historiques (CSV)"),
                 data=csv_historical,
                 file_name=f"budget_france_historique_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
@@ -454,7 +620,7 @@ else:
             if predictions_df is not None and not predictions_df.empty:
                 csv_predictions = predictions_df.to_csv(index=False, encoding='utf-8')
                 st.download_button(
-                    label="📥 Télécharger Prédictions (CSV)",
+                    label="📥 " + translate("button.download_predictions", current_lang, "Télécharger Prédictions (CSV)"),
                     data=csv_predictions,
                     file_name=f"budget_france_predictions_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
@@ -465,7 +631,7 @@ else:
             if not growth_analysis_df.empty:
                 csv_analysis = growth_analysis_df.to_csv(index=False, encoding='utf-8')
                 st.download_button(
-                    label="📥 Télécharger Analyse (CSV)",
+                    label="📥 " + translate("button.download_analysis", current_lang, "Télécharger Analyse (CSV)"),
                     data=csv_analysis,
                     file_name=f"budget_france_analyse_{datetime.now().strftime('%Y%m%d')}.csv",
                     mime="text/csv"
