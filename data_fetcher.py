@@ -13,7 +13,12 @@ class DataFetcher:
         # --- ENDPOINTS (ouverts) ---
         self.BALANCES_RECORDS = (
             "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
-            "balances_des_comptes_etat/records?limit=1000"
+            "balances_des_comptes_etat/records"
+            "?select=multiplicateur,annee,postes,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
+            "&where=startswith(compte%2C%20%277%27)"
+            "&group_by=annee,postes"
+            "&order_by=annee%20DESC,compte"
+            "&limit=100"
         )
         self.SME_RECORDS = (
             "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
@@ -615,131 +620,137 @@ class DataFetcher:
                 return c
         return None
 
-    def _normalize_revenue_df(
-        self,
-        df: pd.DataFrame,
-        start_year: int,
-        end_year: int,
-        year_col_hint: list[str] = None,
-        prefer_cols: tuple = (
-            "recette",
-            "recettes",
-            "produit",
-            "revenu",
-            "montant",
-            "total",
-            "budget",
-        ),
-    ) -> pd.DataFrame:
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["Année", "Montant"])
-        df1 = df.copy()
-        df1.columns = [str(c).strip() for c in df1.columns]
+    # def _normalize_revenue_df(
+    #     self,
+    #     df: pd.DataFrame,
+    #     start_year: int,
+    #     end_year: int,
+    #     year_col_hint: list[str] = None,
+    #     prefer_cols: tuple = (
+    #         "recette",
+    #         "recettes",
+    #         "produit",
+    #         "revenu",
+    #         "montant",
+    #         "total",
+    #         "budget",
+    #     ),
+    # ) -> pd.DataFrame:
+    #     if df is None or df.empty:
+    #         return pd.DataFrame(columns=["Année", "Montant"])
+    #     df1 = df.copy()
+    #     df1.columns = [str(c).strip() for c in df1.columns]
 
-        year_col = self._detect_year_series(df1, year_col_hint=year_col_hint)
-        years_in_headers = [
-            c
-            for c in df1.columns
-            if pd.Series([c]).str.fullmatch(r"(19|20)\d{2}").any()
-        ]
+    #     year_col = self._detect_year_series(df1, year_col_hint=year_col_hint)
+    #     years_in_headers = [
+    #         c
+    #         for c in df1.columns
+    #         if pd.Series([c]).str.fullmatch(r"(19|20)\d{2}").any()
+    #     ]
 
-        if not year_col and years_in_headers:
-            id_vars = [c for c in df1.columns if c not in years_in_headers]
-            melted = df1.melt(
-                id_vars=id_vars,
-                value_vars=years_in_headers,
-                var_name="Année",
-                value_name="Montant_raw",
-            )
-            melted["Année"] = pd.to_numeric(melted["Année"], errors="coerce").astype(
-                "Int64"
-            )
-            melted["Montant"] = melted["Montant_raw"].map(self._clean_number)
-            headers_blob = " ".join(df1.columns).lower()
-            scale = 1.0
-            if "millier" in headers_blob or "milliers" in headers_blob:
-                scale = 1_000.0
-            elif (
-                "million" in headers_blob
-                or "millions" in headers_blob
-                or "m€" in headers_blob
-            ):
-                scale = 1_000_000.0
-            elif (
-                "milliard" in headers_blob
-                or "milliards" in headers_blob
-                or "md€" in headers_blob
-            ):
-                scale = 1_000_000_000.0
-            melted["Montant"] = (melted["Montant"] * scale) / 1_000_000_000.0
-            out = (
-                melted.dropna(subset=["Année"])
-                .astype({"Année": "int"})
-                .query("@start_year <= Année <= @end_year")
-                .groupby("Année", as_index=False)["Montant"]
-                .sum()
-                .sort_values("Année")
-            )
-            return out
+    #     if not year_col and years_in_headers:
+    #         id_vars = [c for c in df1.columns if c not in years_in_headers]
+    #         melted = df1.melt(
+    #             id_vars=id_vars,
+    #             value_vars=years_in_headers,
+    #             var_name="Année",
+    #             value_name="Montant_raw",
+    #         )
+    #         melted["Année"] = pd.to_numeric(melted["Année"], errors="coerce").astype(
+    #             "Int64"
+    #         )
+    #         melted["Montant"] = melted["Montant_raw"].map(self._clean_number)
+    #         headers_blob = " ".join(df1.columns).lower()
+    #         scale = 1.0
+    #         if "millier" in headers_blob or "milliers" in headers_blob:
+    #             scale = 1_000.0
+    #         elif (
+    #             "million" in headers_blob
+    #             or "millions" in headers_blob
+    #             or "m€" in headers_blob
+    #         ):
+    #             scale = 1_000_000.0
+    #         elif (
+    #             "milliard" in headers_blob
+    #             or "milliards" in headers_blob
+    #             or "md€" in headers_blob
+    #         ):
+    #             scale = 1_000_000_000.0
+    #         melted["Montant"] = (melted["Montant"] * scale) / 1_000_000_000.0
+    #         out = (
+    #             melted.dropna(subset=["Année"])
+    #             .astype({"Année": "int"})
+    #             .query("@start_year <= Année <= @end_year")
+    #             .groupby("Année", as_index=False)["Montant"]
+    #             .sum()
+    #             .sort_values("Année")
+    #         )
+    #         return out
 
-        if not year_col:
-            return pd.DataFrame(columns=["Année", "Montant"])
+    #     if not year_col:
+    #         return pd.DataFrame(columns=["Année", "Montant"])
 
-        out = df1.copy()
-        out["Année"] = pd.to_numeric(out[year_col], errors="coerce").astype("Int64")
-        out = out.dropna(subset=["Année"])
-        out["Année"] = out["Année"].astype(int)
+    #     out = df1.copy()
+    #     out["Année"] = pd.to_numeric(out[year_col], errors="coerce").astype("Int64")
+    #     out = out.dropna(subset=["Année"])
+    #     out["Année"] = out["Année"].astype(int)
 
-        cand_cols = [
-            c
-            for c in out.columns
-            if c != year_col and any(tok in c.lower() for tok in prefer_cols)
-        ]
-        if not cand_cols:
-            cand_cols = []
-            for c in out.columns:
-                if c == year_col:
-                    continue
-                vals = pd.to_numeric(out[c], errors="coerce")
-                if vals.notna().sum() >= max(3, int(0.25 * len(vals))):
-                    cand_cols.append(c)
-        if not cand_cols:
-            return pd.DataFrame(columns=["Année", "Montant"])
+    #     cand_cols = [
+    #         c
+    #         for c in out.columns
+    #         if c != year_col and any(tok in c.lower() for tok in prefer_cols)
+    #     ]
+    #     if not cand_cols:
+    #         cand_cols = []
+    #         for c in out.columns:
+    #             if c == year_col:
+    #                 continue
+    #             vals = pd.to_numeric(out[c], errors="coerce")
+    #             if vals.notna().sum() >= max(3, int(0.25 * len(vals))):
+    #                 cand_cols.append(c)
+    #     if not cand_cols:
+    #         return pd.DataFrame(columns=["Année", "Montant"])
 
-        for c in cand_cols:
-            out[c] = out[c].map(self._clean_number)
+    #     for c in cand_cols:
+    #         out[c] = out[c].map(self._clean_number)
 
-        out["Montant_raw"] = out[cand_cols].sum(axis=1, skipna=True)
-        headers_blob = " ".join(df1.columns).lower()
-        scale = 1.0
-        if "millier" in headers_blob or "milliers" in headers_blob:
-            scale = 1_000.0
-        elif (
-            "million" in headers_blob
-            or "millions" in headers_blob
-            or "m€" in headers_blob
-        ):
-            scale = 1_000_000.0
-        elif (
-            "milliard" in headers_blob
-            or "milliards" in headers_blob
-            or "md€" in headers_blob
-        ):
-            scale = 1_000_000_000.0
-        out["Montant"] = (out["Montant_raw"] * scale) / 1_000_000_000.0
+    #     out["Montant_raw"] = out[cand_cols].sum(axis=1, skipna=True)
+    #     headers_blob = " ".join(df1.columns).lower()
+    #     scale = 1.0
+    #     if "millier" in headers_blob or "milliers" in headers_blob:
+    #         scale = 1_000.0
+    #     elif (
+    #         "million" in headers_blob
+    #         or "millions" in headers_blob
+    #         or "m€" in headers_blob
+    #     ):
+    #         scale = 1_000_000.0
+    #     elif (
+    #         "milliard" in headers_blob
+    #         or "milliards" in headers_blob
+    #         or "md€" in headers_blob
+    #     ):
+    #         scale = 1_000_000_000.0
+    #     out["Montant"] = (out["Montant_raw"] * scale) / 1_000_000_000.0
 
-        out = (
-            out.query("@start_year <= Année <= @end_year")
-            .groupby("Année", as_index=False)["Montant"]
-            .sum()
-            .sort_values("Année")
-        )
-        return out[["Année", "Montant"]]
+    #     out = (
+    #         out.query("@start_year <= Année <= @end_year")
+    #         .groupby("Année", as_index=False)["Montant"]
+    #         .sum()
+    #         .sort_values("Année")
+    #     )
+    #     return out[["Année", "Montant"]]
 
     # ===============  SOURCES  ===============
 
-    def _fetch_balances_etat_revenue(self, start_year: int, end_year: int) -> pd.DataFrame:
+    def _fetch_balances_etat_revenue(
+        self, start_year: int, end_year: int
+    ) -> pd.DataFrame:
         """Balances des comptes de l'État → agrège les PRODUITS (classe 7) par année."""
+        # payload = self._http_json(self.BALANCES_RECORDS)
+        # if not payload:
+        #     return pd.DataFrame(columns=["Année", "Montant"])
+
         payload = self._http_json(self.BALANCES_RECORDS)
         if not payload:
             return pd.DataFrame(columns=["Année", "Montant"])
@@ -751,180 +762,22 @@ class DataFetcher:
             df = self._parse_records_to_df(payload)
         if df is None or df.empty:
             return pd.DataFrame(columns=["Année", "Montant"])
-        
-        [print(f"_fetch_balances_etat_revenue raw Col {i}: {c}") for i,c in enumerate(df.columns)]
 
         # Harmonise columns
         df.columns = [str(c).strip() for c in df.columns]
-    
 
         # Year
-        year_col = "annee" if "annee" in df.columns else (
-            "année" if "année" in df.columns else None
+        year_col = (
+            "annee"
+            if "annee" in df.columns
+            else ("année" if "année" in df.columns else None)
         )
-        if year_col is None:
-            # try to infer from a date column
-            date_col = next((c for c in df.columns if any(k in c.lower() for k in ("date","exercice"))), None)
-            if date_col:
-                s = pd.to_datetime(df[date_col], errors="coerce")
-                df["Année"] = s.dt.year
-                year_col = "Année"
-        if year_col is None:
-            return pd.DataFrame(columns=["Année", "Montant"])
-
-        # Value column: coalesce balance_sortie_2 / _3 / (fallback) _ (some resources only have one)
-        for c in ("balance_sortie_2", "balance_sortie_3", "balance_sortie"):
-            if c not in df.columns:
-                df[c] = np.nan
-        df["val"] = df["balance_sortie_2"].where(df["balance_sortie_2"].notna(),
-                    df["balance_sortie_3"].where(df["balance_sortie_3"].notna(),
-                    df["balance_sortie"]))
-
-        # Apply multiplicateur if present
-        if "multiplicateur" in df.columns:
-            # safe multiply
-            try:
-                df["val"] = pd.to_numeric(df["val"], errors="coerce") * pd.to_numeric(df["multiplicateur"], errors="coerce").fillna(1.0)
-            except Exception:
-                df["val"] = pd.to_numeric(df["val"], errors="coerce")
-        else:
-            df["val"] = pd.to_numeric(df["val"], errors="coerce")
-
-        # ---- Filter to revenues (Produits) ----
-        def _contains(col, needle):
-            return df[col].astype(str).str.contains(needle, case=False, na=False) if col in df.columns else pd.Series(False, index=df.index)
-
-        cond_class7 = df["compte"].astype(str).str.startswith("7") if "compte" in df.columns else False
-        cond_categ  = _contains("categorie", "produit")
-        cond_postes = _contains("postes", "produit")
-
-        mask_revenue = cond_class7 | cond_categ | cond_postes
-        df_rev = df[mask_revenue].copy()
-        if df_rev.empty:
-            # nothing matched -> return empty instead of misleading values
-            return pd.DataFrame(columns=["Année", "Montant"])
+    
 
         # Year clean
-        df_rev["Année"] = pd.to_numeric(df_rev[year_col], errors="coerce").astype("Int64")
-        df_rev = df_rev.dropna(subset=["Année"]).astype({"Année": int})
-
-        # Aggregate → Md€
-        out = (
-            df_rev.groupby("Année", as_index=False)["val"].sum()
-                .rename(columns={"val": "Montant"})
-        )
-        # values appear to be in euros; convert to Md€ (billions)
-        out["Montant"] = out["Montant"] / 1_000_000_000.0
-
-        # Keep requested range
-        out = out[(out["Année"] >= start_year) & (out["Année"] <= end_year)]
-        return out.sort_values("Année").reset_index(drop=True)
-
-    def _fetch_sme_revenue(self, start_year: int, end_year: int) -> pd.DataFrame:
-        payload = self._http_json(self.SME_RECORDS)
-        if not payload:
-            return pd.DataFrame(columns=["Année", "Montant"])
-        # v2.1:
-        df = self._parse_v21_results_to_df(payload)
-        # Fallback to legacy shape if needed:
-        print("df _fetch_balances_etat_revenue", df.columns)
-        [print(f"_fetch_balances_etat_revenue raw Col {i}: {c}") for i,c in enumerate(df.columns)]
-        if df.empty:
-            df = self._parse_records_to_df(payload)
-            
-
-
-        # fabriquer Année depuis une date si nécessaire
-        lower_cols = {c.lower(): c for c in df.columns}
-        if "année" not in lower_cols and "annee" not in lower_cols and len(df.columns) > 0:
-            date_col = next((c for c in df.columns if any(k in c.lower() for k in ("date","periode","période","mois"))), None)
-            if date_col:
-                s = pd.to_datetime(df[date_col], errors="coerce")
-                df["Année"] = s.dt.year
-
-        return self._normalize_revenue_df(df, start_year, end_year)
-
-    def _fetch_historic_revenue_from_dataset(
-        self, start_year: int, end_year: int
-    ) -> pd.DataFrame:
-        base = "https://www.data.gouv.fr/api/1/datasets/"
-        for slug in self.HISTO_DS_SLUGS:
-            detail = self._http_json(f"{base}{slug}/")
-            if not detail:
-                continue
-            for res in detail.get("resources", []) or []:
-                fmt = (res.get("format") or "").upper()
-                if fmt not in ("CSV", "JSON"):
-                    continue
-                title = (res.get("title") or res.get("name") or "").lower()
-                if not any(
-                    k in title
-                    for k in (
-                        "recette",
-                        "recettes",
-                        "revenu",
-                        "budget",
-                        "produit",
-                        "equilibre",
-                        "équilibre",
-                    )
-                ):
-                    continue
-                url = res.get("url")
-                if not url:
-                    continue
-
-                df = None
-                try:
-                    if fmt == "JSON":
-                        j = self._http_json(url)
-                        if isinstance(j, list):
-                            df = pd.DataFrame(j)
-                            [print(f"1_fetch_historic_revenue_from_dataset raw Col {i}: {c}") for i,c in enumerate(df.columns)]
-                        elif isinstance(j, dict):
-                            for k in ("data", "records", "results"):
-                                if k in j and isinstance(j[k], list):
-                                    df = pd.DataFrame(j[k])
-                                    [print(f"2_fetch_historic_revenue_from_dataset raw Col {i}: {c}") for i,c in enumerate(df.columns)]
-                                    break
-                    else:
-                        from io import StringIO
-
-                        raw = requests.get(url, timeout=30)
-                        raw.raise_for_status()
-                        content = raw.content
-                        for enc in ("utf-8", "latin-1", "cp1252"):
-                            try:
-                                text = content.decode(enc)
-                            except Exception:
-                                continue
-                            for sep in (None, ";", ";", ",", "\t", "|"):
-                                for dec in (".", ","):
-                                    try:
-                                        df = pd.read_csv(
-                                            StringIO(text),
-                                            sep=sep,
-                                            engine="python",
-                                            decimal=dec,
-                                        )
-                                        [print(f"3_fetch_historic_revenue_from_dataset raw Col {i}: {c}") for i,c in enumerate(df.columns)]
-                                        if df is not None and not df.empty:
-                                            break
-                                    except Exception:
-                                        df = None
-                                if df is not None:
-                                    break
-                            if df is not None:
-                                break
-                except Exception:
-                    df = None
-
-                if df is not None and not df.empty:
-                    out = self._normalize_revenue_df(df, start_year, end_year)
-                    if not out.empty:
-                        return out
-
-        return pd.DataFrame(columns=["Année", "Montant"])
+        df["Année"] = pd.to_datetime(df[year_col], errors="coerce").dt.year.astype("Int64")
+    
+        return df.sort_values("Année").reset_index(drop=True)
 
     # ===============  MÉTHODE PRINCIPALE  ===============
 
@@ -940,38 +793,24 @@ class DataFetcher:
             end_year = pd.Timestamp.now().year
         if start_year is None:
             start_year = end_year - 19
+        if start_year < 2015:
+            start_year = 2015
 
         frames = []
         try:
             frames.append(self._fetch_balances_etat_revenue(start_year, end_year))
         except Exception:
             pass
-        try:
-            frames.append(self._fetch_sme_revenue(start_year, end_year))
-        except Exception:
-            pass
-        try:
-            frames.append(
-                self._fetch_historic_revenue_from_dataset(start_year, end_year)
-            )
-        except Exception:
-            pass
-
-        frames = [f for f in frames if f is not None and not f.empty]
-        if not frames:
-            # rien trouvé : renvoyer DF vide explicite
-            return pd.DataFrame(columns=["Année", "Montant"])
 
         out = pd.concat(frames, ignore_index=True)
         # garder uniquement la plage demandée
         out = out[(out["Année"] >= start_year) & (out["Année"] <= end_year)]
-        # agrège si plusieurs sources trouvent la même année
-        out = (
-            out.groupby("Année", as_index=False)["Montant"].mean().sort_values("Année")
-        )
-        # astuce: on prend la moyenne si les sources diffèrent; sinon passe à .sum() si tu préfères
-        return out.reset_index(drop=True)
-    
+
+        out['montant'] = out['montant'].map(lambda x: x / 1_000_000_000)
+        out = out[['Année', 'montant', 'postes']].reset_index(drop=True)
+        out.columns = ["Année", "Montant", "Postes"]
+        return out
+
     def _parse_v21_results_to_df(self, payload) -> pd.DataFrame:
         """
         v2.1 Explore API returns a dict with 'results': [ {flat fields...}, ... ].
@@ -998,3 +837,8 @@ class DataFetcher:
             if isinstance(fields, dict):
                 rows.append(fields)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+# data_fetcher = DataFetcher()
+# revenue = data_fetcher.fetch_revenue_20y(start_year=2015, end_year=2023)
+# print(revenue)

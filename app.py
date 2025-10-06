@@ -346,14 +346,14 @@ else:
             st.metric("Prédiction 2030", "N/A", "Calcul en cours")
 
     # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs( #removed tab6 for revenue
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "📈 " + translate("tab.evolution", current_lang, "Évolution Temporelle"),
             "🏛️ " + translate("tab.compare", current_lang, "Comparaison Missions"),
             "📊 " + translate("tab.split", current_lang, "Répartition Budgétaire"),
             "🔮 " + translate("tab.pred", current_lang, "Prédictions"),
             "📋 " + translate("tab.details", current_lang, "Analyse Détaillée"),
-            # "💰 " + translate("tab.revenue", current_lang, "Recettes de l'État"),
+            "💰 " + translate("tab.revenue", current_lang, "Recettes de l'État"),
         ]
     )
 
@@ -973,8 +973,7 @@ else:
         ):
             try:
                 fetcher = DataFetcher()
-                revenue_data = fetcher.fetch_revenue_20y(start_year=2005, end_year=2025)
-                print("data:", revenue_data)
+                revenue_data = fetcher.fetch_revenue_20y(start_year=year_range[0], end_year=year_range[1])
             except Exception as e:
                 st.error(
                     f"❌ "
@@ -1006,14 +1005,15 @@ else:
                 revenue_data,
                 x="Année",
                 y="Montant",
+                color="Postes",
                 title=translate(
                     "title.revenue_evolution_chart",
                     current_lang,
                     "Évolution des Recettes de l'État",
                 ),
-                labels={"Montant": montant_label, "Année": "Année"},
+                labels={"Montant": montant_label, "Année": "Année", "Postes": "Catégorie de recettes"},
             )
-            fig_revenue.update_layout(height=600, hovermode="x unified")
+            fig_revenue.update_layout(height=600, hovermode="x unified", legend_title="Catégories de recettes")
             add_period_overlays(
                 fig_revenue,
                 government_periods,
@@ -1028,30 +1028,129 @@ else:
             )
             st.plotly_chart(fig_revenue, use_container_width=True)
 
-            # Key metrics for revenue
-            col1, col2 = st.columns(2)
+            # Key metrics by revenue category (Postes)
             latest_year = revenue_data["Année"].max()
-            latest_revenue = revenue_data[revenue_data["Année"] == latest_year][
-                "Montant"
-            ].sum()
             earliest_year = revenue_data["Année"].min()
-            earliest_revenue = revenue_data[revenue_data["Année"] == earliest_year][
-                "Montant"
-            ].sum()
-            total_growth = ((latest_revenue - earliest_revenue) / earliest_revenue) * 100
-            avg_annual_growth = total_growth / (latest_year - earliest_year)
 
-            with col1:
-                st.metric(
-                    f"Recettes Totales {latest_year}",
-                    format_currency(latest_revenue),
-                    f"{total_growth:.1f}% depuis {earliest_year}",
+            latest_revenue_by_poste = (
+                revenue_data[revenue_data["Année"] == latest_year]
+                .groupby("Postes")["Montant"]
+                .sum()
+            )
+            earliest_revenue_by_poste = (
+                revenue_data[revenue_data["Année"] == earliest_year]
+                .groupby("Postes")["Montant"]
+                .sum()
+            )
+
+            # Combine for growth calculations
+            metrics_df = pd.DataFrame({
+                "Latest": latest_revenue_by_poste,
+                "Earliest": earliest_revenue_by_poste
+            }).fillna(0)
+
+            metrics_df["TotalGrowthPct"] = (
+                (metrics_df["Latest"] - metrics_df["Earliest"]) / metrics_df["Earliest"].replace(0, np.nan)
+            ) * 100
+            metrics_df["AvgAnnualGrowthPct"] = metrics_df["TotalGrowthPct"] / (latest_year - earliest_year)
+
+            # Display metrics
+            st.subheader(f"Évolution par catégorie ({earliest_year} → {latest_year})")
+            cols = st.columns(len(metrics_df))
+
+            for (poste, row), col in zip(metrics_df.iterrows(), cols):
+                with col:
+                    st.metric(
+                        f"{poste} {latest_year}",
+                        format_currency(row['Latest']),
+                        f"{row['TotalGrowthPct']:.1f}% depuis {earliest_year} | {row['AvgAnnualGrowthPct']:.1f}%/an"
+                    )
+
+            # Calculate recettes - dépenses
+            if st.session_state.data_loaded:
+                combined_data = revenue_data.groupby("Année", as_index=False)["Montant"].sum()
+                combined_data = combined_data.rename(columns={"Montant": "Recettes"})
+                expense_data = df.groupby("Année", as_index=False)["Montant"].sum()
+                # print(expense_data)
+                expense_data = expense_data.rename(columns={"Montant": "Dépenses"})
+                combined_data = pd.merge(combined_data, expense_data, on="Année", how="inner")
+                combined_data["Recettes - Dépenses"] = combined_data["Recettes"] - combined_data["Dépenses"]
+
+                # Plot total recettes over time
+                st.subheader(
+                    translate(
+                        "header.total_revenue",
+                        current_lang,
+                        "Évolution des Recettes Totales",
+                    )
                 )
-            with col2:
-                st.metric(
-                    "Croissance Annuelle Moyenne",
-                    f"{avg_annual_growth:.1f}%",
-                    "Sur la période",
+                fig_total_revenue = px.line(
+                    combined_data,
+                    x="Année",
+                    y="Recettes",
+                    title=translate(
+                        "title.total_revenue_chart",
+                        current_lang,
+                        "Évolution des Recettes Totales",
+                    ),
+                    labels={"Recettes": "Montant (Milliards €)", "Année": "Année"},
+                )
+                fig_total_revenue.update_layout(height=600, hovermode="x unified")
+                add_period_overlays(
+                    fig_total_revenue,
+                    government_periods,
+                    int(combined_data["Année"].min()),
+                    int(combined_data["Année"].max()),
+                )
+                add_event_markers(
+                    fig_total_revenue,
+                    key_events,
+                    int(combined_data["Année"].min()),
+                    int(combined_data["Année"].max()),
+                )
+                st.plotly_chart(fig_total_revenue, use_container_width=True)
+
+                # Plot recettes - dépenses evolution
+                st.subheader(
+                    translate(
+                        "header.revenue_expense_diff",
+                        current_lang,
+                        "Évolution de Recettes - Dépenses",
+                    )
+                )
+                fig_diff = px.line(
+                    combined_data,
+                    x="Année",
+                    y="Recettes - Dépenses",
+                    title=translate(
+                        "title.revenue_expense_diff_chart",
+                        current_lang,
+                        "Évolution de Recettes - Dépenses",
+                    ),
+                    labels={"Recettes - Dépenses": "Montant (Milliards €)", "Année": "Année"},
+                )
+                fig_diff.update_layout(height=600, hovermode="x unified")
+                add_period_overlays(
+                    fig_diff,
+                    government_periods,
+                    int(combined_data["Année"].min()),
+                    int(combined_data["Année"].max()),
+                )
+                add_event_markers(
+                    fig_diff,
+                    key_events,
+                    int(combined_data["Année"].min()),
+                    int(combined_data["Année"].max()),
+                )
+                st.plotly_chart(fig_diff, use_container_width=True)
+            else:
+                st.warning(
+                    "⚠️ "
+                    + translate(
+                        "warning.no_expense_data",
+                        current_lang,
+                        "Aucune donnée de dépenses disponible pour calculer Recettes - Dépenses.",
+                    )
                 )
         else:
             st.warning(
