@@ -37,8 +37,8 @@ def format_currency(amount: float, currency: str = "€") -> str:
     elif abs(amount) >= 1:
         suffix = f" Md{currency}"
     else:
-        amount = amount * 1000
-        suffix = f" M{currency}"
+        amount = amount
+        suffix = f" Md{currency}"
 
     try:
         # Use French number formatting
