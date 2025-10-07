@@ -21,14 +21,14 @@ class BudgetPredictor:
         
         Args:
             df: Historical budget data with columns [Année, Mission, Montant]
-            predict_years: Years to predict (default: 2026-2030)
+            predict_years: Years to predict (default: 2025-2030)
             
         Returns:
             DataFrame with predictions
         """
         
         if predict_years is None:
-            predict_years = list(range(2026, 2031))
+            predict_years = list(range(2025, 2031))
         
         # Prepare features
         df_features = self._prepare_features(df)
