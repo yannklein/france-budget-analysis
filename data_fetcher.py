@@ -11,14 +11,23 @@ class DataFetcher:
 
     def __init__(self):
         # --- ENDPOINTS (ouverts) ---
-        self.BALANCES_RECORDS = (
+        self.BALANCES_REVENUES = (
             "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
             "balances_des_comptes_etat/records"
-            "?select=multiplicateur,annee,postes,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
-            "&where=startswith(compte%2C%20%277%27)"
-            "&group_by=annee,postes"
+            "?select=annee,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
+            "&where=startswith(compte,'7')"
+            "&group_by=annee,compte"
             "&order_by=annee%20DESC,compte"
-            "&limit=100"
+            "&limit=10000"
+        )
+        self.BALANCES_SPENDING = (
+            "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
+            "balances_des_comptes_etat/records"
+            "?select=annee,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
+            "&where=startswith(compte,'6')"
+            "&group_by=annee,compte"
+            "&order_by=annee%20DESC,compte"
+            "&limit=10000"
         )
         self.SME_RECORDS = (
             "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
@@ -83,7 +92,7 @@ class DataFetcher:
         except Exception as e:
             # If API fails, return realistic sample data based on actual French budget structure
             print(f"Erreur API {source}: {e}")
-            return self._generate_realistic_budget_data(start_year, end_year)
+            # return self._generate_realistic_budget_data(start_year, end_year)
 
     def _fetch_from_data_gouv(self, start_year: int, end_year: int) -> pd.DataFrame:
         """Fetch data from data.gouv.fr API."""
@@ -94,6 +103,8 @@ class DataFetcher:
 
         response = requests.get(search_url, params=params, timeout=30)
         response.raise_for_status()
+        
+        print("URL: ", response.url)
 
         datasets = response.json().get("data", [])
 
@@ -184,53 +195,62 @@ class DataFetcher:
     def _fetch_from_data_economie(self, start_year: int, end_year: int) -> pd.DataFrame:
         """Fetch data from data.economie.gouv.fr API."""
 
-        url = self.base_urls["data_economie"]
-        params = {"q": "budget état", "rows": 1000, "format": "json"}
+        # plage par défaut: dernières 20 années pleines
+        if end_year is None:
+            end_year = pd.Timestamp.now().year
+        if start_year is None:
+            start_year = end_year - 19
+        if start_year < 2015:
+            start_year = 2015
 
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
+        frames = []
+        try:
+            frames.append(self._fetch_balances_etat(start_year, end_year, type="spending"))
+        except Exception:
+            pass
+        
+        comptes = {
+            "60": "Achats (matières premières, fournitures, marchandises…)",
+            "61": "Services extérieurs (sous-traitance, locations, entretien, assurances…)",
+            "62": "Autres services extérieurs (rémunérations d’intermédiaires, honoraires, publicité…)",
+            "63": "Impôts, taxes et versements assimilés",
+            "64": "Charges de personnel (salaires, cotisations sociales, retraites…)",
+            "65": "Autres charges de gestion courante (subventions versées, dons, pertes sur créances, etc.)",
+            "66": "Charges financières (intérêts, pertes de change, escomptes…)",
+            "67": "Charges exceptionnelles (pénalités, amendes, dons, subventions exceptionnelles…)",
+            "68": "Dotations aux amortissements et provisions",
+            "69": "Participation des salariés, impôts sur les bénéfices et assimilés"
+        }
 
-        data = response.json()
-        records = data.get("records", [])
+        out = pd.concat(frames, ignore_index=True)
+        
+        # After loading API results into df (with columns: annee, compte, montant, ...)
+        out.columns = out.columns.map(str)
+        out = out.loc[:, ~out.columns.duplicated()]
 
-        if not records:
-            raise Exception("Aucune donnée trouvée sur data.economie.gouv.fr")
+        # 1) Build a single year column as int
+        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype("Int64")
 
-        # Parse records and convert to DataFrame
-        parsed_data = []
-        for record in records:
-            fields = record.get("fields", {})
-            # Extract relevant budget information
-            if "annee" in fields or "year" in fields:
-                year = fields.get("annee", fields.get("year", 0))
-                if isinstance(year, str):
-                    year = int(year) if year.isdigit() else 0
+        # 2) Ensure montant is numeric (then scale to billions if you want)
+        out["montant"] = pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
 
-                if start_year <= year <= end_year:
-                    amount = fields.get("montant", fields.get("amount", 0))
-                    if isinstance(amount, str):
-                        try:
-                            amount = float(amount.replace(",", "."))
-                        except:
-                            amount = 0
+        # 3) Map compte -> Mission by first two digits
+        out["compte"] = out["compte"].astype(str)
+        out["Mission"] = out["compte"].str[:2].map(comptes).fillna(out["compte"].str[:2])
 
-                    mission = fields.get(
-                        "mission", fields.get("category", "Non spécifié")
-                    )
+        # 4) Keep only needed cols and drop the original datetime 'annee' to avoid duplicates
+        out = out[["Année", "Mission", "montant"]].dropna(subset=["Année"])
 
-                    parsed_data.append(
-                        {
-                            "Année": year,
-                            "Mission": mission,
-                            "Montant": amount / 1000000,  # Convert to billions
-                        }
-                    )
+        # 5) Aggregate
+        out = out.groupby(["Année", "Mission"], as_index=False)["montant"].sum()
+        out.rename(columns={"montant": "Montant"}, inplace=True)
 
-        if not parsed_data:
-            raise Exception("Impossible de parser les données économiques")
-
-        df = pd.DataFrame(parsed_data)
-        return self._normalize_budget_data(df, start_year, end_year)
+        # final column names and types
+        out.rename(columns={"montant": "Montant"}, inplace=True)
+        out["Année"] = pd.to_numeric(out["Année"], errors="coerce").astype("Int64")
+        out["Montant"] = pd.to_numeric(out["Montant"], errors="coerce").fillna(0.0)
+        out = out.query("@start_year <= Année <= @end_year")
+        return out
 
     def _download_and_parse_resource(
         self, url: str, format_type: str
@@ -743,15 +763,15 @@ class DataFetcher:
 
     # ===============  SOURCES  ===============
 
-    def _fetch_balances_etat_revenue(
-        self, start_year: int, end_year: int
+    def _fetch_balances_etat(
+        self, start_year: int, end_year: int, type: str = "revenue"
     ) -> pd.DataFrame:
         """Balances des comptes de l'État → agrège les PRODUITS (classe 7) par année."""
-        # payload = self._http_json(self.BALANCES_RECORDS)
+        # payload = self._http_json(self.BALANCES_REVENUES)
         # if not payload:
         #     return pd.DataFrame(columns=["Année", "Montant"])
 
-        payload = self._http_json(self.BALANCES_RECORDS)
+        payload = self._http_json(self.BALANCES_REVENUES) if type == "revenue" else self._http_json(self.BALANCES_SPENDING)
         if not payload:
             return pd.DataFrame(columns=["Année", "Montant"])
 
@@ -798,17 +818,51 @@ class DataFetcher:
 
         frames = []
         try:
-            frames.append(self._fetch_balances_etat_revenue(start_year, end_year))
+            frames.append(self._fetch_balances_etat(start_year, end_year))
         except Exception:
             pass
-
+        
+        comptes_revenus = {
+            "70": "Ventes de produits finis, prestations de services, marchandises",
+            "71": "Production stockée (variation de stocks de produits en cours et finis)",
+            "72": "Production immobilisée (travaux et services produits par l’entreprise pour elle-même)",
+            "73": "Chiffre d’affaires subsidiaire (activités accessoires, redevances…)",
+            "74": "Subventions d’exploitation",
+            "75": "Autres produits de gestion courante (revenus des immeubles, quotes-parts, redevances…)",
+            "76": "Produits financiers (intérêts reçus, revenus de participations, produits de change…)",
+            "77": "Produits exceptionnels (cessions d’actifs, reprises sur provisions exceptionnelles…)",
+            "78": "Reprises sur amortissements et provisions, transferts de charges",
+            "79": "Transferts de charges (reclassement de charges en produits)"
+        }
+        
         out = pd.concat(frames, ignore_index=True)
-        # garder uniquement la plage demandée
-        out = out[(out["Année"] >= start_year) & (out["Année"] <= end_year)]
 
-        out['montant'] = out['montant'].map(lambda x: x / 1_000_000_000)
-        out = out[['Année', 'montant', 'postes']].reset_index(drop=True)
-        out.columns = ["Année", "Montant", "Postes"]
+        # After loading API results into df (with columns: annee, compte, montant, ...)
+        out.columns = out.columns.map(str)
+        out = out.loc[:, ~out.columns.duplicated()]
+
+        # 1) Build a single year column as int
+        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype("Int64")
+
+        # 2) Ensure montant is numeric (then scale to billions if you want)
+        out["montant"] = pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
+
+        # 3) Map compte -> Mission by first two digits
+        out["compte"] = out["compte"].astype(str)
+        out["Postes"] = out["compte"].str[:2].map(comptes_revenus).fillna(out["compte"].str[:2])
+
+        # 4) Keep only needed cols and drop the original datetime 'annee' to avoid duplicates
+        out = out[["Année", "Postes", "montant"]].dropna(subset=["Année"])
+
+        # 5) Aggregate
+        out = out.groupby(["Année", "Postes"], as_index=False)["montant"].sum()
+        out.rename(columns={"montant": "Montant"}, inplace=True)
+
+        # final column names and types
+        out.rename(columns={"montant": "Montant"}, inplace=True)
+        out["Année"] = pd.to_numeric(out["Année"], errors="coerce").astype("Int64")
+        out["Montant"] = pd.to_numeric(out["Montant"], errors="coerce").fillna(0.0)
+        out = out.query("@start_year <= Année <= @end_year")
         return out
 
     def _parse_v21_results_to_df(self, payload) -> pd.DataFrame:
