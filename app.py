@@ -109,7 +109,11 @@ include_debt_interest = st.sidebar.checkbox(
 # Data source selection
 data_source = st.sidebar.selectbox(
     translate("sidebar.data_source", current_lang, "Source de données"),
-    ["data.gouv.fr", "INSEE", "data.economie.gouv.fr"],
+    [
+        # "data.gouv.fr", 
+        # "INSEE", 
+        "data.economie.gouv.fr"
+    ],
     help=translate(
         "sidebar.data_source",
         current_lang,
@@ -120,9 +124,9 @@ data_source = st.sidebar.selectbox(
 # Year range selection
 year_range = st.sidebar.slider(
     translate("sidebar.year_range", current_lang, "Plage d'années"),
-    min_value=2005,
-    max_value=2025,
-    value=(2005, 2025),
+    min_value=2015,
+    max_value=2024,
+    value=(2015, 2024),
     help=translate(
         "sidebar.year_range", current_lang, "Sélectionner la période d'analyse"
     ),
@@ -340,7 +344,7 @@ else:
             st.metric(
                 "Prédiction 2030",
                 format_currency(future_total),
-                f"{((future_total - latest_total) / latest_total * 100):.1f}% vs 2025",
+                f"{((future_total - latest_total) / latest_total * 100):.1f}% vs 2024",
             )
         else:
             st.metric("Prédiction 2030", "N/A", "Calcul en cours")
@@ -362,7 +366,7 @@ else:
             translate(
                 "header.evolution_missions",
                 current_lang,
-                "Évolution des Dépenses par Mission (2005-2025)",
+                "Évolution des Dépenses par Mission (2005-2024)",
             )
         )
         st.markdown(
@@ -380,12 +384,13 @@ else:
             y="Montant",
             color="Mission",
             title=translate(
-                "title.mission_evolution",
-                current_lang,
-                "Évolution des Dépenses Budgétaires par Mission",
+            "title.mission_evolution",
+            current_lang,
+            "Évolution des Dépenses Budgétaires par Mission",
             ),
             labels={"Montant": montant_label, "Année": "Année", "Mission": "Mission"},
         )
+        fig_evolution.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
         fig_evolution.update_layout(height=600, hovermode="x unified")
         add_period_overlays(
             fig_evolution,
@@ -432,6 +437,8 @@ else:
 
         growth_df = pd.DataFrame(growth_data)
         if not growth_df.empty:
+            growth_df["Mission"] = growth_df["Mission"].str.split("(").str[0].str.strip()
+
             growth_df = growth_df.sort_values(
                 "Croissance Annuelle (%)", ascending=False
             )
@@ -527,24 +534,33 @@ else:
         ) * 100
         st.subheader(f"Répartition en Pourcentage - {comparison_year}")
 
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            fig_pie = px.pie(
-                year_data,
-                values="Montant",
-                names="Mission",
-                title="Répartition du Budget par Mission",
+        year_data["Mission"] = year_data["Mission"].str.split("(").str[0].str.strip()
+        
+        # Pie chart
+        fig_pie = px.pie(
+            year_data,
+            values="Montant",
+            names="Mission",
+            title="Répartition du Budget par Mission",
+        )
+        fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+        fig_pie.update_layout(
+            height=500,
+            legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.3,  # Adjusted to move the legend further down
+            xanchor="center",
+            x=0.5
             )
-            fig_pie.update_traces(textposition="inside", textinfo="percent+label")
-            fig_pie.update_layout(height=500)
-            st.plotly_chart(fig_pie, use_container_width=True)
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-        with col2:
-            st.dataframe(
-                year_data[["Mission", "Montant", "Pourcentage"]].round(2),
-                use_container_width=True,
-            )
+        # Dataframe below the pie chart
+        st.dataframe(
+            year_data[["Mission", "Montant", "Pourcentage"]].round(2),
+            use_container_width=True,
+        )
 
     with tab3:
         st.subheader(
@@ -591,6 +607,13 @@ else:
             yaxis_title=montant_label,
             height=600,
             hovermode="x unified",
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.3,  # Position the legend below the graph
+                xanchor="center",
+                x=0.5,
+            ),
         )
         add_period_overlays(
             fig_stacked,
@@ -629,6 +652,13 @@ else:
             yaxis_title="Pourcentage (%)",
             height=600,
             hovermode="x unified",
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.3,  # Position the legend below the graph
+                xanchor="center",
+                x=0.5,
+            ),
         )
         st.plotly_chart(fig_pct, use_container_width=True)
 
@@ -681,13 +711,23 @@ else:
 
             # Add vertical line to separate historical and predicted data
             fig_pred.add_vline(
-                x=2025.5,
+                x=2024.5,
                 line_dash="dash",
                 line_color="red",
                 annotation_text="Limite Historique/Prédiction",
             )
 
-            fig_pred.update_layout(height=600, hovermode="x unified")
+            fig_pred.update_layout(
+                height=600,
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.4,  # Position the legend below the graph
+                    xanchor="center",
+                    x=0.5,
+                ),
+            )
             add_period_overlays(
                 fig_pred,
                 government_periods,
@@ -710,7 +750,7 @@ else:
             )
 
             pred_2030 = predictions_df[predictions_df["Année"] == 2030]
-            hist_2025 = df[df["Année"] == 2025]
+            hist_2024 = df[df["Année"] == 2024]
 
             summary_data = []
             for mission in pred_2030["Mission"].unique():
@@ -718,8 +758,8 @@ else:
                     "Montant_Prédit"
                 ].iloc[0]
                 hist_value = (
-                    hist_2025[hist_2025["Mission"] == mission]["Montant"].iloc[0]
-                    if mission in hist_2025["Mission"].values
+                    hist_2024[hist_2024["Mission"] == mission]["Montant"].iloc[0]
+                    if mission in hist_2024["Mission"].values
                     else 0
                 )
 
@@ -731,7 +771,7 @@ else:
                 summary_data.append(
                     {
                         "Mission": mission,
-                        "Budget 2025 (Milliards €)": round(hist_value, 2),
+                        "Budget 2024 (Milliards €)": round(hist_value, 2),
                         "Prédiction 2030 (Milliards €)": round(pred_value, 2),
                         "Croissance Prédite (%)": round(growth, 1),
                         "Variation (Milliards €)": round(pred_value - hist_value, 2),
@@ -1013,7 +1053,18 @@ else:
                 ),
                 labels={"Montant": montant_label, "Année": "Année", "Postes": "Catégorie de recettes"},
             )
-            fig_revenue.update_layout(height=600, hovermode="x unified", legend_title="Catégories de recettes")
+            fig_revenue.update_layout(
+                height=600,
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.3,  # Position the legend below the graph
+                    xanchor="center",
+                    x=0.5,
+                ),
+                legend_title="Catégories de recettes",
+            )
             add_period_overlays(
                 fig_revenue,
                 government_periods,
@@ -1054,17 +1105,32 @@ else:
             ) * 100
             metrics_df["AvgAnnualGrowthPct"] = metrics_df["TotalGrowthPct"] / (latest_year - earliest_year)
 
-            # Display metrics
+            # Display metrics in 3 rows
             st.subheader(f"Évolution par catégorie ({earliest_year} → {latest_year})")
-            cols = st.columns(len(metrics_df))
+            rows = [metrics_df.iloc[i:i+4] for i in range(0, len(metrics_df), 4)]
 
-            for (poste, row), col in zip(metrics_df.iterrows(), cols):
-                with col:
-                    st.metric(
-                        f"{poste} {latest_year}",
-                        format_currency(row['Latest']),
-                        f"{row['TotalGrowthPct']:.1f}% depuis {earliest_year} | {row['AvgAnnualGrowthPct']:.1f}%/an"
-                    )
+            for row_group in rows:
+                cols = st.columns(len(row_group))
+                for (poste, row), col in zip(row_group.iterrows(), cols):
+                    with col:
+                        st.metric(
+                            f"{poste} {latest_year}",
+                            format_currency(row['Latest']),
+                            f"{row['TotalGrowthPct']:.1f}% depuis {earliest_year} | {row['AvgAnnualGrowthPct']:.1f}%/an"
+                        )
+
+            # Add a total evolution metric
+            total_latest = metrics_df['Latest'].sum()
+            total_earliest = metrics_df['Earliest'].sum()
+            total_growth_pct = ((total_latest - total_earliest) / total_earliest) * 100
+            avg_annual_growth_pct = total_growth_pct / (latest_year - earliest_year)
+
+            st.subheader("Évolution Totale")
+            st.metric(
+                f"Total {latest_year}",
+                format_currency(total_latest),
+                f"{total_growth_pct:.1f}% depuis {earliest_year} | {avg_annual_growth_pct:.1f}%/an"
+            )
 
             # Calculate recettes - dépenses
             if st.session_state.data_loaded:
