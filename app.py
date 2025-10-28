@@ -142,7 +142,7 @@ if st.sidebar.button(
             fetcher = DataFetcher()
             st.session_state.budget_data = fetcher.fetch_budget_data(
                 source=data_source, start_year=year_range[0], end_year=year_range[1]
-            )
+            ).head(100)
             st.session_state.data_loaded = True
             st.sidebar.success("✅ Données chargées avec succès!")
 
