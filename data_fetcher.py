@@ -11,6 +11,7 @@ class DataFetcher:
 
     def __init__(self):
         # --- ENDPOINTS (ouverts) ---
+        
         self.BALANCES_REVENUES = (
             "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
             "balances_des_comptes_etat/records"
@@ -29,6 +30,92 @@ class DataFetcher:
             "&order_by=annee%20DESC,compte"
             "&limit=10000"
         )
+        # self.COMPTE_SPENDINGS = {
+        #     "60": "Achats (matières premières, fournitures, marchandises…)",
+        #     "61": "Services extérieurs (sous-traitance, locations, entretien, assurances…)",
+        #     "62": "Autres services extérieurs (rémunérations d’intermédiaires, honoraires, publicité…)",
+        #     "63": "Impôts, taxes et versements assimilés",
+        #     "64": "Charges de personnel (salaires, cotisations sociales, retraites…)",
+        #     "65": "Autres charges de gestion courante (subventions versées, dons, pertes sur créances, etc.)",
+        #     "66": "Charges financières (intérêts, pertes de change, escomptes…)",
+        #     "67": "Charges exceptionnelles (pénalités, amendes, dons, subventions exceptionnelles…)",
+        #     # "68": "Dotations aux amortissements et provisions",
+        #     # "69": "Participation des salariés, impôts sur les bénéfices et assimilés",
+        #     # "20": "Immobilisations incorporelles (achats de logiciels, R&D capitalisée…)",
+        #     # "21": "Immobilisations corporelles (bâtiments, infrastructures, matériel…)",
+        #     # "22": "Immobilisations mises en concession",
+        #     # "23": "Immobilisations en cours",
+        #     # "24": "Immobilisations sous concession (infrastructures concédées : autoroutes, aéroports…)",
+        #     # "25": "Participations et créances rattachées (prises de participation, recapitalisations, cessions d’actions, prêts liés aux participations)",
+        #     # "26": "Autres participations (placements financiers de long terme dans des entreprises non liées, participations stratégiques minoritaires…)",
+        #     # "27": "Autres immobilisations financières",
+        #     # "28": "Amortissements des immobilisations (compte de correction)",
+        #     # "29": "Provisions pour dépréciation des immobilisations (correction)",
+        #     # "16": "Emprunts et dettes assimilées (émissions, remboursements, intérêts rattachés)",
+        #     # "40": "Fournisseurs et comptes rattachés",
+        #     # "41": "Usagers/clients et redevables",
+        #     # "42": "Personnel et comptes rattachés",
+        #     # "43": "Organismes sociaux",
+        #     # "44": "État et autres collectivités publiques (fiscalité, impôts à payer/recevoir)",
+        #     # "45": "Groupe et associés",
+        #     # "46": "Débiteurs et créditeurs divers",
+        #     # "47": "Comptes transitoires et d’attente",
+        #     # "48": "Comptes de régularisation (charges/produits constatés d’avance…)",
+        #     # "49": "Provisions pour dépréciation des comptes de tiers",
+        # }
+
+        # self.COMPTE_REVENUES = {
+        #     "70": "Ventes de produits finis, prestations de services, marchandises",
+        #     "71": "Production stockée (variation de stocks de produits en cours et finis)",
+        #     "72": "Production immobilisée (travaux et services produits par l’entreprise pour elle-même)",
+        #     "73": "Chiffre d’affaires subsidiaire (activités accessoires, redevances…)",
+        #     "74": "Subventions d’exploitation",
+        #     "75": "Autres produits de gestion courante (revenus des immeubles, quotes-parts, redevances…)",
+        #     "76": "Produits financiers (intérêts reçus, revenus de participations, produits de change…)",
+        #     # "77": "Produits exceptionnels (cessions d’actifs, reprises sur provisions exceptionnelles…)",
+        #     # "78": "Reprises sur amortissements et provisions, transferts de charges",
+        #     # "79": "Transferts de charges (reclassement de charges en produits)",
+        # }
+        
+        with open('account_name.json') as f:
+            d = json.load(f)
+            self.COMPTES = d
+        
+        # --- CAPEX: Class 2 (immobilisations) — treat as spending (acquisitions) ---
+        self.BALANCES_CAPEX = (
+            "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
+            "balances_des_comptes_etat/records"
+            "?select=annee,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
+            "&where=startswith(compte,'2')"
+            "&group_by=annee,compte"
+            "&order_by=annee%20DESC,compte"
+            "&limit=10000"
+        )
+
+        # --- Financing: Class 16 (emprunts et dettes assimilées) as proxy for debt cash flows ---
+        # Interpret positive montants as repayments (cash-out) or new debt (cash-in) based on sign after fetch.
+        self.BALANCES_FINANCING_16 = (
+            "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
+            "balances_des_comptes_etat/records"
+            "?select=annee,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
+            "&where=startswith(compte,'16')"
+            "&group_by=annee,compte"
+            "&order_by=annee%20DESC,compte"
+            "&limit=10000"
+        )
+
+        # --- (Optional) Third parties / transfers: Class 4 ---
+        # Use carefully to avoid double counting vs 6/7; useful to isolate EU transfers, settlements, etc.
+        self.BALANCES_THIRDPARTY = (
+            "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
+            "balances_des_comptes_etat/records"
+            "?select=annee,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
+            "&where=startswith(compte,'4')"
+            "&group_by=annee,compte"
+            "&order_by=annee%20DESC,compte"
+            "&limit=10000"
+        )
+
         self.SME_RECORDS = (
             "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
             "situation-mensuelle-de-l-etat/records?limit=100000"
@@ -103,7 +190,7 @@ class DataFetcher:
 
         response = requests.get(search_url, params=params, timeout=30)
         response.raise_for_status()
-        
+
         print("URL: ", response.url)
 
         datasets = response.json().get("data", [])
@@ -205,38 +292,37 @@ class DataFetcher:
 
         frames = []
         try:
-            frames.append(self._fetch_balances_etat(start_year, end_year, type="spending"))
+            frames.append(
+                self._fetch_balances_etat(start_year, end_year, type="spending")
+            )
         except Exception:
             pass
-        
-        comptes = {
-            "60": "Achats (matières premières, fournitures, marchandises…)",
-            "61": "Services extérieurs (sous-traitance, locations, entretien, assurances…)",
-            "62": "Autres services extérieurs (rémunérations d’intermédiaires, honoraires, publicité…)",
-            "63": "Impôts, taxes et versements assimilés",
-            "64": "Charges de personnel (salaires, cotisations sociales, retraites…)",
-            "65": "Autres charges de gestion courante (subventions versées, dons, pertes sur créances, etc.)",
-            "66": "Charges financières (intérêts, pertes de change, escomptes…)",
-            "67": "Charges exceptionnelles (pénalités, amendes, dons, subventions exceptionnelles…)",
-            "68": "Dotations aux amortissements et provisions",
-            "69": "Participation des salariés, impôts sur les bénéfices et assimilés"
-        }
 
         out = pd.concat(frames, ignore_index=True)
-        
+
         # After loading API results into df (with columns: annee, compte, montant, ...)
         out.columns = out.columns.map(str)
         out = out.loc[:, ~out.columns.duplicated()]
 
         # 1) Build a single year column as int
-        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype("Int64")
+        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype(
+            "Int64"
+        )
 
         # 2) Ensure montant is numeric (then scale to billions if you want)
-        out["montant"] = pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
+        out["montant"] = (
+            pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
+        )
 
         # 3) Map compte -> Mission by first two digits
         out["compte"] = out["compte"].astype(str)
-        out["Mission"] = out["compte"].str[:2].map(comptes).fillna(out["compte"].str[:2])
+        out = out[out["compte"].str[:2].isin(self.COMPTE_SPENDINGS.keys())]
+        out["Mission"] = (
+            out["compte"]
+            .str[:2]
+            .map(self.COMPTE_SPENDINGS)
+            .fillna(out["compte"].str[:2])
+        )
 
         # 4) Keep only needed cols and drop the original datetime 'annee' to avoid duplicates
         out = out[["Année", "Mission", "montant"]].dropna(subset=["Année"])
@@ -771,12 +857,19 @@ class DataFetcher:
         # if not payload:
         #     return pd.DataFrame(columns=["Année", "Montant"])
 
-        payload = self._http_json(self.BALANCES_REVENUES) if type == "revenue" else self._http_json(self.BALANCES_SPENDING)
-        if not payload:
-            return pd.DataFrame(columns=["Année", "Montant"])
+        if type == "revenue":
+            payload = self._http_json(self.BALANCES_REVENUES)
+            df = self._parse_v21_results_to_df(payload)
+        else:
+            dfs = []
+            dfs.append(self._http_json(self.BALANCES_SPENDING)),
+            dfs.append(self._http_json(self.BALANCES_CAPEX)),
+            # dfs.append(self._http_json(self.BALANCES_FINANCING_16)),
+            dfs.append(self._http_json(self.BALANCES_THIRDPARTY)),
+            dfs = [self._parse_v21_results_to_df(p) for p in dfs if p]
+            df = pd.concat(dfs, ignore_index=True)
 
         # v2.1 payload
-        df = self._parse_v21_results_to_df(payload)
         if df is None or df.empty:
             # fallback legacy (unlikely with v2.1)
             df = self._parse_records_to_df(payload)
@@ -792,11 +885,12 @@ class DataFetcher:
             if "annee" in df.columns
             else ("année" if "année" in df.columns else None)
         )
-    
 
         # Year clean
-        df["Année"] = pd.to_datetime(df[year_col], errors="coerce").dt.year.astype("Int64")
-    
+        df["Année"] = pd.to_datetime(df[year_col], errors="coerce").dt.year.astype(
+            "Int64"
+        )
+
         return df.sort_values("Année").reset_index(drop=True)
 
     # ===============  MÉTHODE PRINCIPALE  ===============
@@ -821,20 +915,7 @@ class DataFetcher:
             frames.append(self._fetch_balances_etat(start_year, end_year))
         except Exception:
             pass
-        
-        comptes_revenus = {
-            "70": "Ventes de produits finis, prestations de services, marchandises",
-            "71": "Production stockée (variation de stocks de produits en cours et finis)",
-            "72": "Production immobilisée (travaux et services produits par l’entreprise pour elle-même)",
-            "73": "Chiffre d’affaires subsidiaire (activités accessoires, redevances…)",
-            "74": "Subventions d’exploitation",
-            "75": "Autres produits de gestion courante (revenus des immeubles, quotes-parts, redevances…)",
-            "76": "Produits financiers (intérêts reçus, revenus de participations, produits de change…)",
-            "77": "Produits exceptionnels (cessions d’actifs, reprises sur provisions exceptionnelles…)",
-            "78": "Reprises sur amortissements et provisions, transferts de charges",
-            "79": "Transferts de charges (reclassement de charges en produits)"
-        }
-        
+
         out = pd.concat(frames, ignore_index=True)
 
         # After loading API results into df (with columns: annee, compte, montant, ...)
@@ -842,14 +923,24 @@ class DataFetcher:
         out = out.loc[:, ~out.columns.duplicated()]
 
         # 1) Build a single year column as int
-        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype("Int64")
+        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype(
+            "Int64"
+        )
 
         # 2) Ensure montant is numeric (then scale to billions if you want)
-        out["montant"] = pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
+        out["montant"] = (
+            pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
+        )
 
         # 3) Map compte -> Mission by first two digits
         out["compte"] = out["compte"].astype(str)
-        out["Postes"] = out["compte"].str[:2].map(comptes_revenus).fillna(out["compte"].str[:2])
+        out = out[out["compte"].str[:2].isin(self.COMPTE_REVENUES.keys())]
+        out["Postes"] = (
+            out["compte"]
+            .str[:2]
+            .map(self.COMPTE_REVENUES)
+            .fillna(out["compte"].str[:2])
+        )
 
         # 4) Keep only needed cols and drop the original datetime 'annee' to avoid duplicates
         out = out[["Année", "Postes", "montant"]].dropna(subset=["Année"])
