@@ -836,5 +836,18 @@
   "7873": "Reprises sur provisions réglementées (stocks)",
   "7874": "Reprises sur autres provisions réglementées",
   "7875": "Reprises sur provisions exceptionnelles",
-  "7876": "Reprises sur dépréciations exceptionnelles"
+  "7876": "Reprises sur dépréciations exceptionnelles",
+  "8": "Comptes spéciaux",
+  "86": "Emplois des contributions volontaires en nature",
+  "860": "Secours en nature",
+  "861": "Mise à dispositions gratuites de biens",
+  "862": "Prestations",
+  "864": "Personnel bénévole",
+  "87": "Contributions volontaires en nature",
+  "870": "Dons en nature",
+  "871": "Prestations en nature",
+  "875": "Bénévolat",
+  "89": "Bilan",
+  "890": "Bilan d'ouverture",
+  "891": "Bilan de clôture"
 }
