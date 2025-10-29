@@ -32,7 +32,7 @@ class BudgetPredictor:
         
         # Prepare features
         df_features = self._prepare_features(df)
-        
+                
         # Train models for each mission
         predictions = []
         
@@ -116,86 +116,102 @@ class BudgetPredictor:
     
     def _ml_prediction(self, mission_data: pd.DataFrame, mission: str, predict_years: list) -> list:
         """Use machine learning models for prediction."""
-        
-        # Prepare training data
-        X = mission_data[['Année', 'Mission_Encoded', 'Tendance', 'Cycle_Économique', 'Taux_Croissance']].fillna(0)
-        y = mission_data['Montant']
-        
-        # Scale features
+
+        # --- Prepare training data ---
+        X = mission_data[['Année', 'Mission_Encoded', 'Tendance', 'Cycle_Économique', 'Taux_Croissance']].copy()
+        y = mission_data['Montant'].copy()
+
+        # --- Sanitize inputs ---
+        import numpy as np
+        import pandas as pd
+
+        # Coerce all numeric values and replace inf/nan
+        X = X.apply(pd.to_numeric, errors='coerce').replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        y = pd.to_numeric(y, errors='coerce').replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        # Clip to avoid overflow (e.g. scaling exploding)
+        X = X.clip(-1e6, 1e6)
+        y = np.clip(y, -1e6, 1e6)
+
+        # --- Scaling ---
+        from sklearn.preprocessing import StandardScaler
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        # Train ensemble of models
+
+        # Defensive conversion to float64
+        X_scaled = scaler.fit_transform(X.astype(np.float64))
+
+        # --- Train ensemble of models ---
+        from sklearn.linear_model import LinearRegression
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.metrics import r2_score
+
         models = {
             'linear': LinearRegression(),
             'rf': RandomForestRegressor(n_estimators=100, random_state=42)
         }
-        
+
         model_predictions = {}
         model_scores = {}
-        
+
         for name, model in models.items():
             try:
+                # Safety: ensure y has variance (avoid R² nan or inf)
+                if np.std(y) == 0:
+                    raise ValueError("Constant target; fallback to trend")
+
                 model.fit(X_scaled, y)
-                
-                # Calculate model score (R²)
+
                 y_pred_train = model.predict(X_scaled)
                 score = r2_score(y, y_pred_train)
-                model_scores[name] = max(0, score)  # Ensure non-negative weights
-                
-                # Make predictions
+                model_scores[name] = max(0, np.nan_to_num(score))  # avoid NaN weights
+
+                # --- Predict future years ---
                 predictions = []
                 for year in predict_years:
-                    # Create features for prediction year
                     X_pred = np.array([[
                         year,
                         mission_data['Mission_Encoded'].iloc[0],
                         year - mission_data['Année'].min(),
                         self._get_economic_cycle(year),
                         mission_data['Taux_Croissance'].mean()
-                    ]])
-                    
+                    ]], dtype=float)
+
                     X_pred_scaled = scaler.transform(X_pred)
-                    pred = model.predict(X_pred_scaled)[0]
+                    pred = float(model.predict(X_pred_scaled)[0])
                     predictions.append(pred)
-                
+
                 model_predictions[name] = predictions
-                
+
             except Exception as e:
-                # Fallback to simple trend if model fails
+                print(f"[WARN] Model {name} failed for {mission}: {e}")
                 model_predictions[name] = self._simple_trend_prediction(mission_data, predict_years)
                 model_scores[name] = 0.1
-        
-        # Ensemble prediction using weighted average
+
+        # --- Ensemble weighted average ---
         total_weight = sum(model_scores.values()) or 1
-        weights = {name: score/total_weight for name, score in model_scores.items()}
-        
+        weights = {name: score / total_weight for name, score in model_scores.items()}
+
         ensemble_predictions = []
-        for i in range(len(predict_years)):
-            weighted_pred = sum(
-                weights[name] * model_predictions[name][i] 
-                for name in model_predictions
-            )
-            
-            # Apply constraints (no negative spending, reasonable growth)
+        for i, year in enumerate(predict_years):
+            weighted_pred = sum(weights[name] * model_predictions[name][i] for name in model_predictions)
+
+            # Apply constraints (prevent negative or unrealistic growth)
             last_value = mission_data['Montant'].iloc[-1]
-            max_growth = 1.5  # Maximum 50% growth per year
-            min_value = last_value * 0.5  # Minimum 50% of last value
-            max_value = last_value * (max_growth ** (predict_years[i] - mission_data['Année'].max()))
-            
+            max_growth = 1.5
+            min_value = last_value * 0.5
+            max_value = last_value * (max_growth ** (year - mission_data['Année'].max()))
+
             constrained_pred = max(min_value, min(max_value, weighted_pred))
             ensemble_predictions.append(constrained_pred)
-        
-        # Return predictions
-        results = []
-        for i, year in enumerate(predict_years):
-            results.append({
-                'Année': year,
-                'Mission': mission,
-                'Montant_Prédit': ensemble_predictions[i],
-                'Confiance': min(1.0, sum(model_scores.values()) / len(model_scores))
-            })
-        
+
+        # --- Format results ---
+        results = [{
+            'Année': year,
+            'Mission': mission,
+            'Montant_Prédit': ensemble_predictions[i],
+            'Confiance': min(1.0, sum(model_scores.values()) / len(model_scores))
+        } for i, year in enumerate(predict_years)]
+
         return results
     
     def _simple_linear_prediction(self, df: pd.DataFrame, mission: str, predict_years: list) -> list:
