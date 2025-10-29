@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import io
 import sys
 import os
+import json
 
 # Import custom modules
 from data_fetcher import DataFetcher
@@ -21,6 +22,9 @@ from utils import (
     translate,
     generate_insights_i18n,
 )
+
+with open("account_name.json") as f:
+    COMPTES = json.load(f)
 
 # Configure page
 st.set_page_config(
@@ -106,18 +110,26 @@ include_debt_interest = st.sidebar.checkbox(
     ),
 )
 
-# Data source selection
-data_source = st.sidebar.selectbox(
-    translate("sidebar.data_source", current_lang, "Source de données"),
-    [
-        # "data.gouv.fr", 
-        # "INSEE", 
-        "data.economie.gouv.fr"
-    ],
+# Compte selectimon
+compte_lvl_1 = st.sidebar.selectbox(
+    translate("sidebar.compte_lvl_1", current_lang, "Compte de base"),
+    list(COMPTES.keys()),
+    format_func=lambda key: f"{key} - {COMPTES[key]}",
     help=translate(
-        "sidebar.data_source",
+        "sidebar.compte_lvl_1",
         current_lang,
-        "Choisir la source de données gouvernementales",
+        "Choisir le compte de base pour l'analyse budgétaire.",
+    ),
+)
+
+compte_lvl_2 = st.sidebar.selectbox(
+    translate("sidebar.compte_lvl_2", current_lang, "Compte de base niveau 2"),
+    list(COMPTES.keys() if compte_lvl_1 == "" else [compte for compte in COMPTES.keys() if compte.startswith(compte_lvl_1)] ),
+    format_func=lambda key: f"{key} - {COMPTES[key]}",
+    help=translate(
+        "sidebar.compte_lvl_2",
+        current_lang,
+        "Choisir le compte de base pour l'analyse budgétaire.",
     ),
 )
 
@@ -132,6 +144,18 @@ year_range = st.sidebar.slider(
     ),
 )
 
+# account level
+acc_level_range = st.sidebar.slider(
+    translate("sidebar.acc_level_range", current_lang, "Detail des comptes"),
+    min_value=1,
+    max_value=3,
+    value=(1),
+    help=translate(
+        "sidebar.acc_level_range", current_lang, "Sélectionner le détail des comptes"
+    ),
+)
+
+
 # Load data button
 if st.sidebar.button(
     "🔄 " + translate("sidebar.load_data", current_lang, "Charger les données"),
@@ -141,18 +165,23 @@ if st.sidebar.button(
         try:
             fetcher = DataFetcher()
             st.session_state.budget_data = fetcher.fetch_budget_data(
-                source=data_source, start_year=year_range[0], end_year=year_range[1]
-            ).head(100)
+                start_year=year_range[0], end_year=year_range[1], acc_level_range=acc_level_range, base_compte=(compte_lvl_2 if compte_lvl_2 else compte_lvl_1)
+            )
             st.session_state.data_loaded = True
             st.sidebar.success("✅ Données chargées avec succès!")
 
-            # Generate predictions
-            with st.spinner("Génération des prédictions..."):
-                predictor = BudgetPredictor()
-                st.session_state.predictions = predictor.predict_future_spending(
-                    st.session_state.budget_data
+            if year_range[1] < 2024:
+                st.sidebar.warning(
+                    "⚠️ Selectionnez 2024 comme année de fin pour afficher des prédictions."
                 )
-                st.sidebar.success("✅ Prédictions générées!")
+            else:
+                # Generate predictions
+                with st.spinner("Génération des prédictions..."):
+                    predictor = BudgetPredictor()
+                    st.session_state.predictions = predictor.predict_future_spending(
+                        st.session_state.budget_data
+                    )
+                    st.sidebar.success("✅ Prédictions générées!")
 
         except Exception as e:
             st.sidebar.error(f"❌ Erreur lors du chargement: {str(e)}")
