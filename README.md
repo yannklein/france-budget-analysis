@@ -1,20 +1,74 @@
-# 🏛️ Budget Horizon - French State Budget Analysis
+# Budget Horizon
 
-A comprehensive Streamlit application for analyzing French government budget data with AI-powered predictions, inflation adjustment, and multi-language support.
+**Interactive French Government Budget Analysis with AI-Powered Predictions**
 
-## ✨ Features
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-FF4B4B.svg)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-- **📊 Interactive Visualizations**: Line charts, bar charts, stacked areas, and predictions
-- **🌍 Multi-language Support**: Available in all 24 EU languages with dynamic translation
-- **📈 AI Predictions**: Machine learning models for budget forecasting (2026-2030)
-- **💰 Inflation Adjustment**: View amounts in constant euros with selectable base year
-- **🏛️ Government Context**: Overlay government periods and key economic events
-- **📚 Data Sources**: Transparent references to official government data
-- **💳 Debt Analysis**: Includes state debt interest payments
+A comprehensive data visualization and analysis tool for exploring 20 years of French state budget data, featuring machine learning predictions, inflation adjustments, and multi-language support.
 
-## 🚀 Quick Start
+![Budget Horizon Screenshot](https://via.placeholder.com/800x400?text=Budget+Horizon+Dashboard)
 
-### Local Development
+## Features
+
+### Data Visualization
+- **Time Evolution Charts**: Track budget spending trends across missions over time
+- **Mission Comparison**: Compare budget allocations with interactive bar and pie charts
+- **Budget Breakdown**: Stacked area charts showing composition evolution
+- **Revenue Analysis**: State revenue tracking and revenue-expense differentials
+
+### AI-Powered Predictions
+- **Ensemble ML Models**: Combines Linear Regression and Random Forest for robust predictions
+- **2025-2030 Forecasts**: Project future budget spending with confidence intervals
+- **Growth Constraints**: Intelligent bounds prevent unrealistic predictions
+
+### Analysis Tools
+- **Inflation Adjustment**: View amounts in constant euros with selectable base year
+- **Government Period Overlays**: Visualize budget evolution across different administrations
+- **Economic Event Markers**: Highlight key events (2008 crisis, COVID-19, etc.)
+- **Trend Classification**: Automatic categorization of growth patterns
+
+### Internationalization
+- **8 EU Languages**: French, English, German, Spanish, Italian, Portuguese, Dutch, Polish
+- **Dynamic Translation**: Machine translation fallback for missing translations
+
+## Tech Stack
+
+| Category | Technologies |
+|----------|-------------|
+| **Frontend** | Streamlit, Plotly |
+| **Backend** | Python 3.11+ |
+| **Data Processing** | Pandas, NumPy |
+| **Machine Learning** | scikit-learn |
+| **Data Source** | data.economie.gouv.fr API |
+| **Translation** | deep-translator, googletrans |
+
+## Project Structure
+
+```
+BudgetHorizon/
+├── app.py              # Main Streamlit application
+├── config.py           # Configuration constants and settings
+├── data_fetcher.py     # API data retrieval and processing
+├── predictor.py        # ML-based budget predictions
+├── utils.py            # Utility functions and i18n
+├── account_name.json   # French accounting code mappings
+├── requirements.txt    # Python dependencies
+├── pyproject.toml      # Project metadata and tool config
+├── .streamlit/
+│   └── config.toml     # Streamlit configuration
+└── README.md
+```
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.11 or higher
+- pip or uv package manager
+
+### Installation
 
 1. **Clone the repository**
    ```bash
@@ -22,131 +76,142 @@ A comprehensive Streamlit application for analyzing French government budget dat
    cd BudgetHorizon
    ```
 
-2. **Install dependencies**
+2. **Create a virtual environment** (recommended)
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Run the app**
+4. **Run the application**
    ```bash
    streamlit run app.py
    ```
 
-4. **Open your browser** to `http://localhost:8501`
+5. **Open your browser** to `http://localhost:8501`
 
-## 🌐 Deploy to Streamlit Cloud
+### Using uv (faster alternative)
 
-### Option 1: Streamlit Community Cloud (Recommended)
-
-1. **Push your code to GitHub**
-   ```bash
-   git add .
-   git commit -m "Prepare for deployment"
-   git push origin main
-   ```
-
-2. **Deploy on Streamlit Cloud**
-   - Go to [share.streamlit.io](https://share.streamlit.io)
-   - Click "New app"
-   - Connect your GitHub repository
-   - Select `app.py` as the main file
-   - Click "Deploy!"
-
-3. **Your app will be live** at `https://your-app-name.streamlit.app`
-
-### Option 2: Other Platforms
-
-**Railway:**
 ```bash
-# Add railway.json
-{
-  "build": {
-    "builder": "NIXPACKS"
-  },
-  "deploy": {
-    "startCommand": "streamlit run app.py --server.port $PORT"
-  }
-}
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+streamlit run app.py
 ```
 
-**Render:**
-- Connect GitHub repo
-- Select "Web Service"
-- Build command: `pip install -r requirements.txt`
-- Start command: `streamlit run app.py --server.port $PORT`
+## Usage
 
-## 📁 Project Structure
+1. **Select Language**: Choose your preferred language from the sidebar
+2. **Configure Analysis**:
+   - Enable/disable inflation adjustment
+   - Toggle government period overlays
+   - Include/exclude debt interest
+3. **Set Parameters**:
+   - Select account hierarchy level (1-3)
+   - Choose year range (2015-2024)
+4. **Load Data**: Click "Load Data" to fetch budget data
+5. **Explore**: Navigate through the 6 analysis tabs
+
+## Data Sources
+
+| Source | Description |
+|--------|-------------|
+| [data.economie.gouv.fr](https://data.economie.gouv.fr/) | Official French government budget data |
+| [INSEE](https://www.insee.fr/) | Consumer Price Index (CPI) for inflation |
+| [Banque de France](https://www.banque-france.fr/) | Public debt statistics |
+
+## Architecture
+
+### Data Flow
 
 ```
-BudgetHorizon/
-├── app.py                 # Main Streamlit application
-├── data_fetcher.py        # Data fetching from government APIs
-├── predictor.py          # ML models for budget predictions
-├── utils.py              # Utility functions and i18n
-├── requirements.txt      # Python dependencies
-├── .streamlit/
-│   └── config.toml       # Streamlit configuration
-└── README.md             # This file
+┌─────────────────┐     ┌──────────────┐     ┌─────────────┐
+│ data.gouv.fr    │────▶│ DataFetcher  │────▶│   app.py    │
+│ API             │     │              │     │ (Streamlit) │
+└─────────────────┘     └──────────────┘     └─────────────┘
+                               │                    │
+                               ▼                    ▼
+                        ┌──────────────┐     ┌─────────────┐
+                        │  predictor   │────▶│   Charts    │
+                        │  (ML Models) │     │   & Export  │
+                        └──────────────┘     └─────────────┘
 ```
 
-## 🔧 Configuration
+### ML Prediction Pipeline
+
+1. **Feature Engineering**: Year trends, economic cycles, growth rates, moving averages
+2. **Model Training**: Separate models per budget mission
+3. **Ensemble Prediction**: Weighted average based on R² scores
+4. **Constraint Application**: Realistic growth bounds (50%-150% of previous values)
+
+## Configuration
 
 ### Environment Variables (Optional)
+
 ```bash
 # For enhanced translation features
 GOOGLE_TRANSLATE_API_KEY=your_key_here
 ```
 
 ### Streamlit Configuration
-The app uses `.streamlit/config.toml` for:
-- Server settings (headless mode, port)
+
+Edit `.streamlit/config.toml` for:
+- Server settings (port, headless mode)
 - Theme customization
 - CORS and security settings
 
-## 📊 Data Sources
+## Deployment
 
-- **Budget Data**: [data.gouv.fr](https://www.data.gouv.fr/fr/datasets/budget-de-letat/) (Ministry of Economy)
-- **Inflation Data**: [INSEE](https://www.insee.fr/fr/statistiques/serie/000436391) (Consumer Price Index)
-- **Debt Data**: [Banque de France](https://www.banque-france.fr/statistiques/dette-publique)
+### Streamlit Cloud (Recommended)
 
-## 🛠️ Technical Details
+1. Push code to GitHub
+2. Visit [share.streamlit.io](https://share.streamlit.io)
+3. Connect your repository
+4. Select `app.py` as the main file
+5. Deploy
 
-- **Framework**: Streamlit 1.50+
-- **Python**: 3.11+
-- **ML Libraries**: scikit-learn, pandas, numpy
-- **Visualization**: Plotly
-- **Translation**: googletrans, deep-translator
-- **Data Sources**: French government APIs with fallback data
+### Docker
 
-## 🌍 Supported Languages
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+EXPOSE 8501
+CMD ["streamlit", "run", "app.py", "--server.port=8501"]
+```
 
-The app supports all 24 official EU languages:
-- 🇫🇷 French (default)
-- 🇬🇧 English
-- 🇩🇪 German
-- 🇪🇸 Spanish
-- 🇮🇹 Italian
-- 🇵🇱 Polish
-- 🇷🇴 Romanian
-- 🇳🇱 Dutch
-- 🇬🇷 Greek
-- 🇵🇹 Portuguese
-- 🇨🇿 Czech
-- 🇭🇺 Hungarian
-- 🇸🇪 Swedish
-- 🇧🇬 Bulgarian
-- 🇦🇹 Austrian German
-- 🇭🇷 Croatian
-- 🇸🇰 Slovak
-- 🇫🇮 Finnish
-- 🇩🇰 Danish
-- 🇱🇹 Lithuanian
-- 🇸🇮 Slovenian
-- 🇱🇻 Latvian
-- 🇪🇪 Estonian
-- 🇲🇹 Maltese
+## Development
 
-## 🤝 Contributing
+### Code Quality Tools
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Format code
+black .
+
+# Lint code
+ruff check .
+
+# Type checking
+mypy .
+```
+
+### Project Conventions
+
+- **Type Hints**: All functions include type annotations
+- **Docstrings**: Google-style docstrings for public APIs
+- **Column Names**: ASCII-only (e.g., `Annee` instead of `Année`)
+- **Configuration**: Centralized in `config.py`
+
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -154,17 +219,17 @@ The app supports all 24 official EU languages:
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - French government for open data initiatives
-- Streamlit team for the amazing framework
+- Streamlit team for the framework
 - Plotly for interactive visualizations
-- The open-source community
+- scikit-learn community for ML tools
 
 ---
 
-**Made with ❤️ for transparent government budget analysis**
+**Built for transparent government budget analysis**

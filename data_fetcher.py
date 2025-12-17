@@ -1,29 +1,60 @@
-import requests
-import pandas as pd
+"""
+Data fetching module for French government budget data.
+
+This module handles all data retrieval from official French government APIs,
+including budget data, CPI inflation indices, and debt interest calculations.
+"""
+
+from __future__ import annotations
+
 import json
-import time
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Optional
+
 import numpy as np
+import pandas as pd
+import requests
+
+from config import (
+    API_ENDPOINTS,
+    API_TIMEOUT,
+    DEBT_CONFIG,
+    DEFAULT_INFLATION_RATE,
+    INFLATION_RATES,
+    MAX_MONETARY_VALUE,
+    MIN_DATA_YEAR,
+    MIN_MONETARY_VALUE,
+)
 
 
 class DataFetcher:
-    """Fetch French government budget data from various official sources."""
+    """
+    Fetches French government budget data from official APIs.
 
-    def __init__(self):
-        # --- ENDPOINTS (ouverts) ---
+    This class provides methods to retrieve budget data from data.economie.gouv.fr,
+    as well as synthetic debt interest and CPI inflation data for analysis.
 
-        self.BALANCES = (
-            "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/"
-            "balances_des_comptes_etat/records"
-            "?select=annee,compte,sum(balance_sortie*multiplicateur)%20as%20montant"
-            "&group_by=annee,compte"
-            "&order_by=annee%20DESC,compte"
-            "&limit=100000"
-        )
+    Attributes:
+        COMPTES: Dictionary mapping account codes to their descriptions.
 
-        with open("account_name.json") as f:
-            d = json.load(f)
-            self.COMPTES = d
+    Example:
+        >>> fetcher = DataFetcher()
+        >>> df = fetcher.fetch_budget_data(start_year=2020, end_year=2024)
+        >>> print(df.head())
+    """
+
+    def __init__(self) -> None:
+        """Initialize the DataFetcher with account mappings."""
+        self._load_account_mappings()
+
+    def _load_account_mappings(self) -> None:
+        """Load account code mappings from JSON file."""
+        account_file = Path(__file__).parent / "account_name.json"
+        try:
+            with open(account_file, encoding="utf-8") as f:
+                self.COMPTES: dict[str, str] = json.load(f)
+        except FileNotFoundError:
+            self.COMPTES = {}
 
     def fetch_budget_data(
         self,
@@ -31,251 +62,293 @@ class DataFetcher:
         start_year: int = 2015,
         end_year: int = 2025,
         base_compte: str = "",
-        acc_level_range: str = 1,
+        acc_level_range: int = 1,
     ) -> pd.DataFrame:
         """
-        Fetch budget data from specified source.
+        Fetch budget data from the specified source.
 
         Args:
-            source: Data source (data.economie.gouv.fr)
-            start_year: Start year for data
-            end_year: End year for data
+            source: Data source identifier (currently only 'data.economie.gouv.fr').
+            start_year: Start year for data retrieval.
+            end_year: End year for data retrieval.
+            base_compte: Base account code to filter by (empty for all).
+            acc_level_range: Account hierarchy level (1-3).
 
         Returns:
-            DataFrame with columns: Année, Mission, Montant
+            DataFrame with columns: [Annee, Mission, Montant]
+            - Annee: Year (integer)
+            - Mission: Budget mission/account name (string)
+            - Montant: Amount in billions EUR (float)
+
+        Raises:
+            Exception: If API request fails and no fallback is available.
         """
         try:
-            # print(start_year, end_year, base_compte, acc_level_range)
-            result =  self._fetch_from_data_economie(
+            return self._fetch_from_data_economie(
                 start_year, end_year, base_compte, acc_level_range
             )
-            return result
-
         except Exception as e:
-            # If API fails, return realistic sample data based on actual French budget structure
-            print(f"Erreur API {source}: {e}")
+            raise RuntimeError(f"API request failed for {source}: {e}") from e
 
-    # ===============  UTILITAIRES  ===============
+    def _http_json(self, url: str) -> Optional[dict[str, Any]]:
+        """
+        Make an HTTP GET request and return JSON response.
 
-    def _http_json(self, url: str):
+        Args:
+            url: The URL to fetch.
+
+        Returns:
+            Parsed JSON response as dictionary, or None on failure.
+        """
         try:
-            r = requests.get(url, timeout=30)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
+            response = requests.get(url, timeout=API_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError):
             return None
 
-    def _parse_records_to_df(self, records: list) -> pd.DataFrame:
-        rows = []
-        for rec in records or []:
-            fields = rec.get("fields", {})
-            if isinstance(fields, dict):
-                rows.append(fields)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-    def _parse_results_to_df(self, payload) -> pd.DataFrame:
+    def _parse_results_to_df(self, payload: Optional[dict[str, Any]]) -> pd.DataFrame:
         """
-        v2.1 Explore API returns a dict with 'results': [ {flat fields...}, ... ].
+        Parse API v2.1 response into a DataFrame.
+
+        Args:
+            payload: JSON response from the API.
+
+        Returns:
+            DataFrame from the 'results' key, or empty DataFrame on failure.
         """
         if not isinstance(payload, dict):
             return pd.DataFrame()
-        results = payload.get("results") or []
+        results = payload.get("results", [])
         return pd.DataFrame(results) if results else pd.DataFrame()
 
-    # ===============  SOURCES  ===============
+    def _fetch_balances_etat(
+        self, start_year: int, end_year: int
+    ) -> pd.DataFrame:
+        """
+        Fetch state account balances from the API.
 
-    def _fetch_balances_etat(self, start_year: int, end_year: int) -> pd.DataFrame:
-        """Balances des comptes de l'État → agrège les PRODUITS (classe 7) par année."""
-        payload = self._http_json(self.BALANCES)
+        Args:
+            start_year: Start year for filtering.
+            end_year: End year for filtering.
+
+        Returns:
+            DataFrame with harmonized columns including 'Annee' and 'Montant'.
+        """
+        payload = self._http_json(API_ENDPOINTS["balances"])
         df = self._parse_results_to_df(payload)
 
-        # v2.1 payload
-        if df is None or df.empty:
-            # fallback legacy (unlikely with v2.1)
-            df = self._parse_records_to_df(payload)
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["Année", "Montant"])
+        if df.empty:
+            return pd.DataFrame(columns=["Annee", "Montant"])
 
-        # Harmonise columns
+        # Harmonize column names
         df.columns = [str(c).strip() for c in df.columns]
 
-        # Year
-        year_col = (
-            "annee"
-            if "annee" in df.columns
-            else ("année" if "année" in df.columns else None)
-        )
+        # Find and process year column
+        year_col = "annee" if "annee" in df.columns else "annee"
+        if year_col in df.columns:
+            df["Annee"] = pd.to_datetime(
+                df[year_col], errors="coerce"
+            ).dt.year.astype("Int64")
 
-        # Year clean
-        df["Année"] = pd.to_datetime(df[year_col], errors="coerce").dt.year.astype(
-            "Int64"
-        )
-
-        return df.sort_values("Année").reset_index(drop=True)
+        return df.sort_values("Annee").reset_index(drop=True)
 
     def _fetch_from_data_economie(
-        self, start_year: int, end_year: int, base_compte: str, acc_level_range: str
+        self,
+        start_year: int,
+        end_year: int,
+        base_compte: str,
+        acc_level_range: int,
     ) -> pd.DataFrame:
-        """Fetch data from data.economie.gouv.fr API."""
+        """
+        Fetch and process budget data from data.economie.gouv.fr.
 
-        # plage par défaut: dernières 20 années pleines
+        Args:
+            start_year: Start year (minimum: MIN_DATA_YEAR).
+            end_year: End year.
+            base_compte: Base account code filter.
+            acc_level_range: Account detail level.
+
+        Returns:
+            Processed DataFrame with [Annee, Mission, Montant].
+        """
+        # Apply year constraints
         if end_year is None:
             end_year = pd.Timestamp.now().year
         if start_year is None:
             start_year = end_year - 19
-        if start_year < 2015:
-            start_year = 2015
+        start_year = max(start_year, MIN_DATA_YEAR)
 
-        frames = []
-        try:
-            frames.append(self._fetch_balances_etat(start_year, end_year))
-        except Exception:
-            pass
+        # Fetch data
+        df = self._fetch_balances_etat(start_year, end_year)
+        if df.empty:
+            return pd.DataFrame(columns=["Annee", "Mission", "Montant"])
 
-        out = pd.concat(frames, ignore_index=True)
+        # Clean and process
+        df.columns = df.columns.map(str)
+        df = df.loc[:, ~df.columns.duplicated()]
 
-        # After loading API results into df (with columns: annee, compte, montant, ...)
-        out.columns = out.columns.map(str)
-        out = out.loc[:, ~out.columns.duplicated()]
+        # Process year column
+        df["Annee"] = pd.to_datetime(
+            df["annee"], errors="coerce"
+        ).dt.year.astype("Int64")
 
-        # 1) Build a single year column as int
-        out["Année"] = pd.to_datetime(out["annee"], errors="coerce").dt.year.astype(
-            "Int64"
+        # Convert montant to billions EUR
+        df["montant"] = (
+            pd.to_numeric(df["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
         )
 
-        # 2) Ensure montant is numeric (then scale to billions if you want)
-        out["montant"] = (
-            pd.to_numeric(out["montant"], errors="coerce").fillna(0.0) / 1_000_000_000
-        )
+        # Process account codes
+        df["compte"] = df["compte"].astype(str).str.strip("0")
 
-        # 3) Map compte -> Mission by first two digits
-        out["compte"] = out["compte"].astype(str)
-        out["compte"] = out["compte"].map(lambda x: x.strip("0"))
-
-        # highest level
+        # Apply account hierarchy filtering
         if base_compte == "":
-            out["compte"] = out["compte"].map(lambda x: x[:(acc_level_range)])
+            df["compte"] = df["compte"].str[:acc_level_range]
         else:
-            out = out[out["compte"].str.startswith(base_compte)]
-            out["compte"] = out["compte"].map(
-                lambda x: x[: (len(base_compte) + acc_level_range)]
-            )
+            df = df[df["compte"].str.startswith(base_compte)]
+            df["compte"] = df["compte"].str[: len(base_compte) + acc_level_range]
 
-        out["Mission"] = out["compte"].map(
-            lambda x: self.COMPTES[x] if x in self.COMPTES else f"Unknown Mission: {x}"
+        # Map account codes to mission names
+        df["Mission"] = df["compte"].map(
+            lambda x: self.COMPTES.get(x, f"Compte inconnu: {x}")
         )
 
-        # 4) Keep only needed cols and drop the original datetime 'annee' to avoid duplicates
-        out = out[["Année", "Mission", "montant"]].dropna(subset=["Année"])
+        # Select and aggregate
+        df = df[["Annee", "Mission", "montant"]].dropna(subset=["Annee"])
+        df = df.groupby(["Annee", "Mission"], as_index=False)["montant"].sum()
+        df.rename(columns={"montant": "Montant"}, inplace=True)
 
-        # 5) Aggregate
-        out = out.groupby(["Année", "Mission"], as_index=False)["montant"].sum()
-        out.rename(columns={"montant": "Montant"}, inplace=True)
+        # Final type conversions and filtering
+        df["Annee"] = pd.to_numeric(df["Annee"], errors="coerce").astype("Int64")
+        df["Montant"] = pd.to_numeric(df["Montant"], errors="coerce").fillna(0.0)
+        df = df.query("@start_year <= Annee <= @end_year")
 
-        # final column names and types
-        out.rename(columns={"montant": "Montant"}, inplace=True)
-        out["Année"] = pd.to_numeric(out["Année"], errors="coerce").astype("Int64")
-        out["Montant"] = pd.to_numeric(out["Montant"], errors="coerce").fillna(0.0)
-        out = out.query("@start_year <= Année <= @end_year")
-        
-        out["Montant"] = pd.to_numeric(out["Montant"], errors="coerce")
-        out = out.replace([np.inf, -np.inf], np.nan).fillna(0)
-        out["Montant"] = np.clip(out["Montant"], -1e6, 1e6)
-        return out
+        # Sanitize values
+        df["Montant"] = pd.to_numeric(df["Montant"], errors="coerce")
+        df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
+        df["Montant"] = np.clip(df["Montant"], MIN_MONETARY_VALUE, MAX_MONETARY_VALUE)
 
-    def get_debt_interest_series(self, start_year: int, end_year: int) -> pd.DataFrame:
-        """
-        Return an approximate 'Charge de la dette de l'État' series (billions EUR).
-        Uses a synthetic fallback based on plausible averages, trending with rates and inflation.
-        Columns: ['Année','Montant'] where Montant is in billions.
-        """
-        import pandas as pd
-        import math
+        return df
 
-        start_year = int(start_year)
-        end_year = int(end_year)
-        if start_year > end_year:
-            start_year, end_year = end_year, start_year
-
-        years = list(range(start_year, end_year + 1))
-
-        # Baseline (roughly aligns with historic order of magnitude: ~40-55 Bn over the period)
-        base_2005 = 40.0
-        series = {}
-        series[start_year] = base_2005
-
-        # Simple rule: drift slowly; increase in 2008-2012 (post-crisis), stabilize, rise with 2022-2024 inflation/rates
-        for y in years[1:]:
-            prev = series[y - 1]
-            drift = 0.005  # 0.5% baseline drift
-            shock = 0.0
-            if 2008 <= y <= 2012:
-                shock += 0.02  # +2% per year
-            if 2022 <= y <= 2024:
-                shock += 0.03  # +3% per year due to higher rates/inflation
-            series[y] = prev * (1.0 + drift + shock)
-
-        return pd.DataFrame(
-            {"Année": years, "Montant": [round(series[y], 2) for y in years]}
-        )
-
-    def get_cpi_series(
-        self, start_year: int, end_year: int, base_year: int = None
+    def fetch_revenue_20y(
+        self,
+        start_year: int = 2015,
+        end_year: int = 2024,
     ) -> pd.DataFrame:
         """
-        Return a CPI index for France with columns ['Année','CPI'].
-        Uses a robust fallback (synthetic series) if remote fetch is unavailable.
-        CPI is returned as an index; normalization to a base year is handled by the utils deflator.
-        """
-        import pandas as pd
+        Fetch state revenue data for the specified period.
 
+        This method retrieves revenue data from account class 7 (products/revenues)
+        from the French government accounting system.
+
+        Args:
+            start_year: Start year for data retrieval.
+            end_year: End year for data retrieval.
+
+        Returns:
+            DataFrame with columns: [Annee, Postes, Montant]
+        """
+        # Fetch revenue data (class 7 accounts)
+        df = self.fetch_budget_data(
+            start_year=start_year,
+            end_year=end_year,
+            base_compte="7",
+            acc_level_range=1,
+        )
+
+        if df.empty:
+            return pd.DataFrame(columns=["Annee", "Postes", "Montant"])
+
+        # Rename Mission to Postes for revenue
+        df = df.rename(columns={"Mission": "Postes"})
+
+        return df
+
+    def get_debt_interest_series(
+        self, start_year: int, end_year: int
+    ) -> pd.DataFrame:
+        """
+        Generate synthetic debt interest series.
+
+        Creates an approximate 'Charge de la dette de l'Etat' series based on
+        historical patterns and economic cycle adjustments.
+
+        Args:
+            start_year: Start year for the series.
+            end_year: End year for the series.
+
+        Returns:
+            DataFrame with columns: [Annee, Montant] where Montant is in billions EUR.
+        """
         start_year = int(start_year)
         end_year = int(end_year)
         if start_year > end_year:
             start_year, end_year = end_year, start_year
 
         years = list(range(start_year, end_year + 1))
+        series: dict[int, float] = {start_year: DEBT_CONFIG["base_value_billions"]}
 
-        # Approximate yearly inflation (%) as a safe fallback
-        approx_inflation = {
-            2005: 1.9,
-            2006: 1.7,
-            2007: 1.5,
-            2008: 2.8,
-            2009: 0.1,
-            2010: 1.5,
-            2011: 2.1,
-            2012: 2.0,
-            2013: 0.9,
-            2014: 0.5,
-            2015: 0.1,
-            2016: 0.2,
-            2017: 1.0,
-            2018: 1.8,
-            2019: 1.1,
-            2020: 0.5,
-            2021: 1.6,
-            2022: 5.2,
-            2023: 4.9,
-            2024: 2.5,
-            2025: 2.0,
-            2026: 2.0,
-            2027: 2.0,
-            2028: 2.0,
-            2029: 2.0,
-            2030: 2.0,
-        }
+        for year in years[1:]:
+            prev = series[year - 1]
+            drift = DEBT_CONFIG["baseline_drift"]
+            shock = 0.0
 
-        cpi_values = {start_year: 100.0}
-        for y in years[1:]:
-            prev = cpi_values[y - 1]
-            infl = approx_inflation.get(y, 2.0) / 100.0
-            cpi_values[y] = prev * (1.0 + infl)
+            # Apply crisis shocks
+            if 2008 <= year <= 2012:
+                shock += DEBT_CONFIG["crisis_shock_2008_2012"]
+            if 2022 <= year <= 2024:
+                shock += DEBT_CONFIG["crisis_shock_2022_2024"]
 
-        return pd.DataFrame({"Année": years, "CPI": [cpi_values[y] for y in years]})
+            series[year] = prev * (1.0 + drift + shock)
+
+        return pd.DataFrame({
+            "Annee": years,
+            "Montant": [round(series[y], 2) for y in years],
+        })
+
+    def get_cpi_series(
+        self,
+        start_year: int,
+        end_year: int,
+        base_year: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """
+        Generate CPI (Consumer Price Index) series for France.
+
+        Creates an inflation index based on historical and projected inflation rates.
+
+        Args:
+            start_year: Start year for the series.
+            end_year: End year for the series.
+            base_year: Base year for normalization (handled by deflator).
+
+        Returns:
+            DataFrame with columns: [Annee, CPI] where CPI is an index value.
+        """
+        start_year = int(start_year)
+        end_year = int(end_year)
+        if start_year > end_year:
+            start_year, end_year = end_year, start_year
+
+        years = list(range(start_year, end_year + 1))
+        cpi_values: dict[int, float] = {start_year: 100.0}
+
+        for year in years[1:]:
+            prev = cpi_values[year - 1]
+            inflation_rate = INFLATION_RATES.get(year, DEFAULT_INFLATION_RATE) / 100.0
+            cpi_values[year] = prev * (1.0 + inflation_rate)
+
+        return pd.DataFrame({
+            "Annee": years,
+            "CPI": [cpi_values[y] for y in years],
+        })
 
 
 if __name__ == "__main__":
+    # Simple test
     fetcher = DataFetcher()
-    df = fetcher.fetch_budget_data(start_year=2015, end_year=2024, acc_level_range=1, base_compte="10")
+    df = fetcher.fetch_budget_data(
+        start_year=2015, end_year=2024, acc_level_range=1, base_compte=""
+    )
+    print(f"Fetched {len(df)} records")
     print(df.head())
