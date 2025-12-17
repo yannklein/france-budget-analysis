@@ -3,11 +3,17 @@ Budget Horizon - French State Budget Analysis Application.
 
 A Streamlit application for analyzing French government budget data
 with AI-powered predictions, inflation adjustments, and multi-language support.
+
+French Accounting Structure:
+- Accounts 1-5: Balance Sheet (Bilan)
+- Account 6: Expenses (Depenses)
+- Account 7: Revenue (Recettes)
 """
 
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -28,12 +34,63 @@ from utils import (
     translate,
 )
 
+# =============================================================================
+# Constants and Configuration
+# =============================================================================
+
 # Load account mappings
 _account_file = Path(__file__).parent / "account_name.json"
 with open(_account_file, encoding="utf-8") as f:
-    COMPTES = json.load(f)
+    COMPTES: dict[str, str] = json.load(f)
 
-# Configure page
+# Account type definitions (French accounting system)
+ACCOUNT_TYPES = {
+    "balance_sheet": {
+        "prefixes": ["1", "2", "3", "4", "5"],
+        "icon": "balance_scale",
+        "label_fr": "Bilan (Comptes 1-5)",
+        "label_en": "Balance Sheet (Accounts 1-5)",
+        "description_fr": "Comptes de capitaux, immobilisations, stocks, tiers et finances",
+        "description_en": "Capital, fixed assets, inventory, third parties, and financial accounts",
+    },
+    "expenses": {
+        "prefixes": ["6"],
+        "icon": "money_with_wings",
+        "label_fr": "Depenses (Compte 6)",
+        "label_en": "Expenses (Account 6)",
+        "description_fr": "Charges et depenses de l'Etat",
+        "description_en": "State expenses and charges",
+    },
+    "revenue": {
+        "prefixes": ["7"],
+        "icon": "chart_increasing",
+        "label_fr": "Recettes (Compte 7)",
+        "label_en": "Revenue (Account 7)",
+        "description_fr": "Produits et recettes de l'Etat",
+        "description_en": "State products and revenue",
+    },
+}
+
+
+def filter_comptes_by_type(account_type: str) -> dict[str, str]:
+    """Filter COMPTES dictionary by account type."""
+    prefixes = ACCOUNT_TYPES[account_type]["prefixes"]
+    return {
+        code: name
+        for code, name in COMPTES.items()
+        if any(code.startswith(p) for p in prefixes)
+    }
+
+
+def get_base_compte_for_type(account_type: str) -> str:
+    """Get default base compte prefix for account type."""
+    return ACCOUNT_TYPES[account_type]["prefixes"][0]
+
+
+# =============================================================================
+# Page Configuration
+# =============================================================================
+
 st.set_page_config(
     page_title=PAGE_CONFIG["page_title"],
     page_icon=PAGE_CONFIG["page_icon"],
@@ -41,17 +98,34 @@ st.set_page_config(
     initial_sidebar_state=PAGE_CONFIG["initial_sidebar_state"],
 )
 
-# Title and description are set after language selection below
 
-# Initialize session state
-if "data_loaded" not in st.session_state:
-    st.session_state.data_loaded = False
-if "budget_data" not in st.session_state:
-    st.session_state.budget_data = None
-if "predictions" not in st.session_state:
-    st.session_state.predictions = None
+# =============================================================================
+# Session State Initialization
+# =============================================================================
 
-# Sidebar configuration
+def init_session_state() -> None:
+    """Initialize all session state variables."""
+    defaults = {
+        "data_loaded": False,
+        "budget_data": None,
+        "predictions": None,
+        "current_view": "expenses",  # Default to expenses view
+        "revenue_data": None,
+        "balance_data": None,
+    }
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+
+init_session_state()
+
+
+# =============================================================================
+# Sidebar Configuration
+# =============================================================================
+
+# Language selection
 lang_options = get_eu_languages()
 lang_codes = [opt["code"] for opt in lang_options]
 lang_names = {opt["code"]: opt["name"] for opt in lang_options}
@@ -61,1219 +135,801 @@ current_lang = st.sidebar.selectbox(
     index=lang_codes.index("fr") if "fr" in lang_codes else 0,
     format_func=lambda c: lang_names.get(c, c),
 )
+
 st.sidebar.header(translate("sidebar.config", current_lang, "Configuration"))
 
-# Update title/description based on selected language
-st.title(
-    "🏛️ "
-    + translate(
-        "title.app", current_lang, "Budget de l'État Français - Analyse et Prédictions"
-    )
+# =============================================================================
+# Main View Selector
+# =============================================================================
+
+st.sidebar.subheader("Type de vue")
+
+view_options = {
+    "balance_sheet": "Bilan (1-5)" if current_lang == "fr" else "Balance Sheet (1-5)",
+    "expenses": "Depenses (6)" if current_lang == "fr" else "Expenses (6)",
+    "revenue": "Recettes (7)" if current_lang == "fr" else "Revenue (7)",
+}
+
+selected_view = st.sidebar.radio(
+    "Selectionner le type de compte",
+    options=list(view_options.keys()),
+    format_func=lambda x: view_options[x],
+    index=list(view_options.keys()).index(st.session_state.current_view),
+    help="Les comptes 1-5 sont le bilan, 6 les depenses, 7 les recettes",
 )
-st.markdown(
-    translate(
-        "desc.app",
-        current_lang,
-        "Cette application analyse l'évolution des dépenses budgétaires de l'État français sur 20 ans et propose des prédictions basées sur l'intelligence artificielle.",
-    )
+
+# Update session state
+st.session_state.current_view = selected_view
+
+# =============================================================================
+# Dynamic Account Filter (based on selected view)
+# =============================================================================
+
+# Filter COMPTES based on selected view
+filtered_comptes = filter_comptes_by_type(selected_view)
+view_prefixes = ACCOUNT_TYPES[selected_view]["prefixes"]
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Filtre des comptes")
+
+# Level 1: Main account category within the view
+compte_lvl_1_options = ["Tous"] + [
+    code for code in filtered_comptes.keys() if len(code) == 1
+]
+compte_lvl_1 = st.sidebar.selectbox(
+    "Compte principal",
+    compte_lvl_1_options,
+    format_func=lambda key: (
+        "Tous les comptes" if key == "Tous" else f"{key} - {filtered_comptes.get(key, 'Inconnu')}"
+    ),
 )
-# Inflation adjustment option
+
+# Level 2: Sub-account (filtered based on level 1)
+if compte_lvl_1 != "Tous":
+    compte_lvl_2_options = [""] + [
+        code
+        for code in filtered_comptes.keys()
+        if code.startswith(compte_lvl_1) and len(code) == 2
+    ]
+else:
+    compte_lvl_2_options = [""]
+
+compte_lvl_2 = st.sidebar.selectbox(
+    "Sous-compte (niveau 2)",
+    compte_lvl_2_options,
+    format_func=lambda key: (
+        "Tous" if key == "" else f"{key} - {filtered_comptes.get(key, 'Inconnu')}"
+    ),
+)
+
+# Level 3: Detail account (filtered based on level 2)
+if compte_lvl_2:
+    compte_lvl_3_options = [""] + [
+        code
+        for code in filtered_comptes.keys()
+        if code.startswith(compte_lvl_2) and len(code) == 3
+    ]
+else:
+    compte_lvl_3_options = [""]
+
+compte_lvl_3 = st.sidebar.selectbox(
+    "Detail (niveau 3)",
+    compte_lvl_3_options,
+    format_func=lambda key: (
+        "Tous" if key == "" else f"{key} - {filtered_comptes.get(key, 'Inconnu')}"
+    ),
+)
+
+# Determine the effective base compte
+def get_effective_base_compte() -> str:
+    """Get the effective base compte based on user selection."""
+    if compte_lvl_3:
+        return compte_lvl_3
+    elif compte_lvl_2:
+        return compte_lvl_2
+    elif compte_lvl_1 != "Tous":
+        return compte_lvl_1
+    else:
+        # Return the first prefix for the view type
+        return get_base_compte_for_type(selected_view)
+
+
+# =============================================================================
+# Analysis Options
+# =============================================================================
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Options d'analyse")
+
 adjust_inflation = st.sidebar.checkbox(
     translate(
         "toggle.inflation", current_lang, "Ajuster pour l'inflation (euros constants)"
     ),
     value=False,
-    help=translate(
-        "toggle.inflation",
-        current_lang,
-        "Affiche les montants en euros constants en utilisant un indice des prix (CPI).",
-    ),
 )
+
 show_governments = st.sidebar.checkbox(
-    translate("toggle.gov_periods", current_lang, "Afficher périodes gouvernementales"),
+    translate("toggle.gov_periods", current_lang, "Afficher periodes gouvernementales"),
     value=False,
-    help=translate(
-        "toggle.gov_periods",
-        current_lang,
-        "Superpose les périodes des gouvernements (Premiers ministres) sur les graphiques temporels.",
-    ),
 )
+
 show_key_events = st.sidebar.checkbox(
-    translate("toggle.events", current_lang, "Afficher événements majeurs"),
+    translate("toggle.events", current_lang, "Afficher evenements majeurs"),
     value=True,
-    help=translate(
-        "toggle.events",
-        current_lang,
-        "Affiche des marqueurs pour des événements macro-économiques ou politiques impactant le budget.",
-    ),
-)
-include_debt_interest = st.sidebar.checkbox(
-    translate("toggle.debt", current_lang, "Inclure charge de la dette (intérêts)"),
-    value=True,
-    help=translate(
-        "toggle.debt",
-        current_lang,
-        "Ajoute la mission 'Charge de la dette de l'État' aux montants.",
-    ),
 )
 
-# Compte selectimon
-compte_lvl_1 = st.sidebar.selectbox(
-    translate("sidebar.compte_lvl_1", current_lang, "Compte de base"),
-    ["Budget total"] + list(COMPTES.keys()),
-    format_func=lambda key: "Budget total" if key == "Budget total" else f"{key} - {COMPTES[key]}",
-    help=translate(
-        "sidebar.compte_lvl_1",
-        current_lang,
-        "Choisir le compte de base pour l'analyse budgétaire.",
-    ),
-)
+# Debt interest option only for expenses view
+include_debt_interest = False
+if selected_view == "expenses":
+    include_debt_interest = st.sidebar.checkbox(
+        translate("toggle.debt", current_lang, "Inclure charge de la dette"),
+        value=False,
+    )
 
-compte_lvl_2 = st.sidebar.selectbox(
-    translate("sidebar.compte_lvl_2", current_lang, "Compte de base niveau 2"),
-    [""] + list(COMPTES.keys() if compte_lvl_1 == "" else [compte for compte in COMPTES.keys() if compte.startswith(str(compte_lvl_1)) and compte != compte_lvl_1 ]),
-    format_func=lambda key: "" if key == "" else f"{key} - {COMPTES[key]}",
-    help=translate(
-        "sidebar.compte_lvl_2",
-        current_lang,
-        "Choisir le compte de base pour l'analyse budgétaire.",
-    ),
-)
+# =============================================================================
+# Year Range and Detail Level
+# =============================================================================
 
-compte_lvl_3 = st.sidebar.selectbox(
-    translate("sidebar.compte_lvl_3", current_lang, "Compte de base niveau 3"),
-    [""] + list(COMPTES.keys() if compte_lvl_1 == "" else [compte for compte in COMPTES.keys() if compte.startswith(str(compte_lvl_2)) and compte != compte_lvl_2 ]),
-    format_func=lambda key: "" if key == "" else f"{key} - {COMPTES[key]}",
-    help=translate(
-        "sidebar.compte_lvl_3",
-        current_lang,
-        "Choisir le compte de base pour l'analyse budgétaire.",
-    ),
-)
+st.sidebar.markdown("---")
+st.sidebar.subheader("Periode et detail")
 
-# Year range selection
 year_range = st.sidebar.slider(
-    translate("sidebar.year_range", current_lang, "Plage d'années"),
+    translate("sidebar.year_range", current_lang, "Plage d'annees"),
     min_value=2015,
     max_value=2024,
     value=(2015, 2024),
-    help=translate(
-        "sidebar.year_range", current_lang, "Sélectionner la période d'analyse"
-    ),
 )
 
-# account level
 acc_level_range = st.sidebar.slider(
-    translate("sidebar.acc_level_range", current_lang, "Detail des comptes"),
+    "Niveau de detail des comptes",
     min_value=1,
     max_value=3,
-    value=(1),
-    help=translate(
-        "sidebar.acc_level_range", current_lang, "Sélectionner le détail des comptes"
-    ),
+    value=1,
+    help="1 = agregats principaux, 3 = detail maximum",
 )
 
 
-# Load data button
-if st.sidebar.button(
-    "🔄 " + translate("sidebar.load_data", current_lang, "Charger les données"),
-    type="primary",
-):
-    with st.spinner("Chargement des données budgétaires..."):
-        try:
-            fetcher = DataFetcher()
-            st.session_state.budget_data = fetcher.fetch_budget_data(
-                start_year=year_range[0],
-                end_year=year_range[1],
-                acc_level_range=acc_level_range,
-                base_compte=(
-                    compte_lvl_3
-                    or compte_lvl_2
-                    or (compte_lvl_1 if compte_lvl_1 != "Budget total" else "")
-                ),
-            )
-            st.session_state.data_loaded = True
-            st.sidebar.success("✅ Données chargées avec succès!")
+# =============================================================================
+# Data Loading
+# =============================================================================
 
-            if year_range[1] < 2024:
-                st.sidebar.warning(
-                    "⚠️ Selectionnez 2024 comme année de fin pour afficher des prédictions."
-                )
+def load_data_for_view() -> None:
+    """Load data based on selected view and filters."""
+    base_compte = get_effective_base_compte()
+    fetcher = DataFetcher()
+
+    try:
+        data = fetcher.fetch_budget_data(
+            start_year=year_range[0],
+            end_year=year_range[1],
+            acc_level_range=acc_level_range,
+            base_compte=base_compte,
+        )
+
+        if selected_view == "expenses":
+            st.session_state.budget_data = data
+            # Generate predictions for expenses
+            if year_range[1] >= 2024 and not data.empty:
+                predictor = BudgetPredictor()
+                st.session_state.predictions = predictor.predict_future_spending(data)
             else:
-                # Generate predictions
-                with st.spinner("Génération des prédictions..."):
-                    predictor = BudgetPredictor()
-                    st.session_state.predictions = predictor.predict_future_spending(
-                        st.session_state.budget_data
-                    )
-                    st.sidebar.success("✅ Prédictions générées!")
+                st.session_state.predictions = None
+        elif selected_view == "revenue":
+            st.session_state.revenue_data = data
+        else:  # balance_sheet
+            st.session_state.balance_data = data
 
-        except Exception as e:
-            st.sidebar.error(f"❌ Erreur lors du chargement: {str(e)}")
-            st.session_state.data_loaded = False
+        st.session_state.data_loaded = True
 
-# Main content
-if not st.session_state.data_loaded:
-    st.info("👈 Utilisez la barre latérale pour charger les données budgétaires.")
+    except Exception as e:
+        st.sidebar.error(f"Erreur: {str(e)}")
+        st.session_state.data_loaded = False
 
-    # Show sample structure while waiting for data
-    st.subheader("📊 Structure des données attendues")
-    sample_data = pd.DataFrame(
-        {
-            "Annee": [2020, 2021, 2022, 2023, 2024],
-            "Mission": ["Défense", "Éducation", "Santé", "Infrastructure", "Recherche"],
-            "Montant (Milliards €)": [47.2, 53.8, 89.4, 32.1, 28.5],
-            "Pourcentage du PIB": [1.8, 2.1, 3.4, 1.2, 1.1],
-        }
+
+if st.sidebar.button(
+    "Charger les donnees",
+    type="primary",
+    use_container_width=True,
+):
+    with st.spinner("Chargement des donnees..."):
+        load_data_for_view()
+        st.sidebar.success("Donnees chargees!")
+
+
+# =============================================================================
+# Helper Functions for Charts
+# =============================================================================
+
+def add_period_overlays(
+    fig: go.Figure, periods: list[dict], min_year: int, max_year: int
+) -> None:
+    """Add government period overlays to a figure."""
+    if not show_governments:
+        return
+    for p in periods:
+        x0 = max(min_year, p["start"])
+        x1 = min(max_year, p["end"])
+        if x1 <= min_year or x0 >= max_year:
+            continue
+        fig.add_vrect(
+            x0=x0,
+            x1=x1,
+            fillcolor=p["color"],
+            opacity=0.08,
+            line_width=0,
+            annotation_text=p["label"],
+            annotation_position="top left",
+        )
+
+
+def add_event_markers(
+    fig: go.Figure, events: list[dict], min_year: int, max_year: int
+) -> None:
+    """Add key event markers to a figure."""
+    if not show_key_events:
+        return
+    for e in events:
+        x = int(e["year"])
+        if x < min_year or x > max_year:
+            continue
+        fig.add_vline(x=x, line_dash="dot", line_color="#7f8c8d")
+        fig.add_annotation(
+            x=x,
+            y=1.02,
+            xref="x",
+            yref="paper",
+            text=e["label"],
+            showarrow=False,
+            font=dict(size=10, color="#7f8c8d"),
+            align="left",
+        )
+
+
+def apply_inflation_adjustment(
+    df: pd.DataFrame, amount_col: str = "Montant"
+) -> tuple[pd.DataFrame, str]:
+    """Apply inflation adjustment if enabled."""
+    if not adjust_inflation or df is None or df.empty:
+        return df, "Montant (Milliards EUR)"
+
+    base_year = int(df["Annee"].max())
+    fetcher = DataFetcher()
+    cpi_df = fetcher.get_cpi_series(int(df["Annee"].min()), 2030)
+    adjusted_df = adjust_to_constant_euros(
+        df, cpi_df, base_year=base_year, amount_col=amount_col
     )
-    st.dataframe(sample_data, use_container_width=True)
+    return adjusted_df, f"Montant (EUR constants {base_year})"
+
+
+# =============================================================================
+# Main Title and Description
+# =============================================================================
+
+view_info = ACCOUNT_TYPES[selected_view]
+view_label = view_info["label_fr"] if current_lang == "fr" else view_info["label_en"]
+view_desc = view_info["description_fr"] if current_lang == "fr" else view_info["description_en"]
+
+st.title(f"Budget Horizon - {view_label}")
+st.markdown(view_desc)
+
+
+# =============================================================================
+# Main Content Area
+# =============================================================================
+
+if not st.session_state.data_loaded:
+    st.info("Utilisez la barre laterale pour charger les donnees.")
+    st.markdown("### Structure des comptes disponibles")
+
+    # Show available accounts for current view
+    sample_accounts = list(filtered_comptes.items())[:10]
+    sample_df = pd.DataFrame(sample_accounts, columns=["Code", "Description"])
+    st.dataframe(sample_df, use_container_width=True)
 
 else:
-    df = st.session_state.budget_data
-    predictions_df = st.session_state.predictions
-    montant_label = "Montant (Milliards EUR)"
-
-    # Use government periods and key events from config
-    government_periods = GOVERNMENT_PERIODS
-    key_events = KEY_EVENTS
-
-    def add_period_overlays(fig, periods, min_year, max_year):
-        if not show_governments:
-            return
-        for p in periods:
-            x0 = max(min_year, p["start"])
-            x1 = min(max_year, p["end"])
-            if x1 <= min_year or x0 >= max_year:
-                continue
-            fig.add_vrect(
-                x0=x0,
-                x1=x1,
-                fillcolor=p["color"],
-                opacity=0.08,
-                line_width=0,
-                annotation_text=p["label"],
-                annotation_position="top left",
-            )
-
-    def add_event_markers(fig, events, min_year, max_year):
-        if not show_key_events:
-            return
-        for e in events:
-            x = int(e["year"])
-            if x < min_year or x > max_year:
-                continue
-            fig.add_vline(
-                x=x,
-                line_dash="dot",
-                line_color="#7f8c8d",
-            )
-            fig.add_annotation(
-                x=x,
-                y=1.02,
-                xref="x",
-                yref="paper",
-                text=e["label"],
-                showarrow=False,
-                font=dict(size=10, color="#7f8c8d"),
-                align="left",
-            )
-
-    # Apply inflation adjustment if requested
-    if adjust_inflation and df is not None and not df.empty:
-        base_year_choice = st.sidebar.number_input(
-            "Annee de base (euros constants)",
-            min_value=int(df["Annee"].min()),
-            max_value=int(
-                max(
-                    df["Annee"].max(),
-                    (
-                        2030
-                        if predictions_df is not None and not predictions_df.empty
-                        else df["Annee"].max()
-                    ),
-                )
-            ),
-            value=int(df["Annee"].max()),
-            step=1,
-        )
-        fetcher = DataFetcher()
-        cpi_df = fetcher.get_cpi_series(
-            int(df["Annee"].min()),
-            int(
-                max(
-                    df["Annee"].max(),
-                    (
-                        2030
-                        if predictions_df is not None and not predictions_df.empty
-                        else df["Annee"].max()
-                    ),
-                )
-            ),
-        )
-        df = adjust_to_constant_euros(
-            df, cpi_df, base_year=base_year_choice, amount_col="Montant"
-        )
-        if predictions_df is not None and not predictions_df.empty:
-            predictions_df = adjust_to_constant_euros(
-                predictions_df,
-                cpi_df,
-                base_year=base_year_choice,
-                amount_col="Montant_Predit",
-            )
-        montant_label = f"Montant (Milliards €, euros constants {base_year_choice})"
-
-    # Optionally include debt interest as a mission
-    if include_debt_interest and df is not None and not df.empty:
-        fetcher = DataFetcher()
-        debt_series = fetcher.get_debt_interest_series(
-            int(df["Annee"].min()), int(df["Annee"].max())
-        )
-        if adjust_inflation and "cpi_df" in locals():
-            debt_series = adjust_to_constant_euros(
-                debt_series, cpi_df, base_year=base_year_choice, amount_col="Montant"
-            )
-        debt_series["Mission"] = "Charge de la dette de l'État"
-        df = pd.concat(
-            [df, debt_series[["Annee", "Mission", "Montant"]]], ignore_index=True
-        )
-
-    # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
-
-    latest_year = df["Annee"].max()
-    latest_total = df[df["Annee"] == latest_year]["Montant"].sum()
-    earliest_year = df["Annee"].min()
-    earliest_total = df[df["Annee"] == earliest_year]["Montant"].sum()
-
-    total_growth = ((latest_total - earliest_total) / earliest_total) * 100
-    avg_annual_growth = total_growth / (latest_year - earliest_year)
-
-    with col1:
-        st.metric(
-            f"Budget Total {latest_year}",
-            format_currency(latest_total),
-            f"{total_growth:.1f}% depuis {earliest_year}",
-        )
-
-    with col2:
-        st.metric(
-            "Croissance Annuelle Moyenne", f"{avg_annual_growth:.1f}%", "Sur la période"
-        )
-
-    with col3:
-        top_categories = get_top_categories(df, n=1)
-        if not top_categories.empty:
-            top_category = top_categories.iloc[0]
-            st.metric(
-                "Mission la Plus Importante",
-                top_category["Mission"],
-                format_currency(top_category["Montant"]),
-            )
+    # =============================================================================
+    # BALANCE SHEET VIEW (Accounts 1-5)
+    # =============================================================================
+    if selected_view == "balance_sheet":
+        df = st.session_state.balance_data
+        if df is None or df.empty:
+            st.warning("Aucune donnee de bilan disponible. Cliquez sur 'Charger les donnees'.")
         else:
-            st.metric("Mission la Plus Importante", "N/A", "N/A")
+            df, montant_label = apply_inflation_adjustment(df)
 
-    with col4:
-        if predictions_df is not None and not predictions_df.empty:
-            future_total = predictions_df[predictions_df["Annee"] == 2030][
-                "Montant_Predit"
-            ].sum()
-            st.metric(
-                "Prédiction 2030",
-                format_currency(future_total),
-                f"{((future_total - latest_total) / latest_total * 100):.1f}% vs 2024",
-            )
-        else:
-            st.metric("Prédiction 2030", "N/A", "Calcul en cours")
+            # Key metrics
+            col1, col2, col3 = st.columns(3)
+            latest_year = int(df["Annee"].max())
+            earliest_year = int(df["Annee"].min())
+            latest_total = df[df["Annee"] == latest_year]["Montant"].sum()
+            earliest_total = df[df["Annee"] == earliest_year]["Montant"].sum()
+            total_growth = ((latest_total - earliest_total) / earliest_total) * 100 if earliest_total else 0
 
-    # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        [
-            "📈 " + translate("tab.evolution", current_lang, "Évolution Temporelle"),
-            "🏛️ " + translate("tab.compare", current_lang, "Comparaison Missions"),
-            "📊 " + translate("tab.split", current_lang, "Répartition Budgétaire"),
-            "🔮 " + translate("tab.pred", current_lang, "Prédictions"),
-            "📋 " + translate("tab.details", current_lang, "Analyse Détaillée"),
-            "💰 " + translate("tab.revenue", current_lang, "Recettes de l'État"),
-        ]
-    )
+            with col1:
+                st.metric(f"Total Bilan {latest_year}", format_currency(latest_total))
+            with col2:
+                st.metric("Evolution totale", f"{total_growth:.1f}%", f"depuis {earliest_year}")
+            with col3:
+                st.metric("Nombre de comptes", len(df["Mission"].unique()))
 
-    with tab1:
-        st.subheader(
-            translate(
-                "header.evolution_missions",
-                current_lang,
-                "Évolution des Dépenses par Mission (2005-2024)",
-            )
-        )
-        st.markdown(
-            translate(
-                "analysis.evolution",
-                current_lang,
-                "Cette vue met en évidence l'évolution de chaque mission dans le temps.",
-            )
-        )
+            # Tabs for balance sheet analysis
+            tab1, tab2, tab3 = st.tabs([
+                "Evolution",
+                "Comparaison",
+                "Repartition",
+            ])
 
-        # Interactive line chart
-        fig_evolution = px.line(
-            df,
-            x="Annee",
-            y="Montant",
-            color="Mission",
-            title=translate(
-            "title.mission_evolution",
-            current_lang,
-            "Évolution des Dépenses Budgétaires par Mission",
-            ),
-            labels={"Montant": montant_label, "Annee": "Annee", "Mission": "Mission"},
-        )
-        fig_evolution.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
-        fig_evolution.update_layout(height=600, hovermode="x unified")
-        add_period_overlays(
-            fig_evolution,
-            government_periods,
-            int(df["Annee"].min()),
-            int(df["Annee"].max()),
-        )
-        add_event_markers(
-            fig_evolution, key_events, int(df["Annee"].min()), int(df["Annee"].max())
-        )
-        st.plotly_chart(fig_evolution, use_container_width=True)
+            with tab1:
+                st.subheader("Evolution des Comptes de Bilan")
 
-        # Growth rate analysis
-        st.subheader(
-            translate(
-                "header.growth_rate",
-                current_lang,
-                "Taux de Croissance Annuel par Mission",
-            )
-        )
-        growth_data = []
-        for mission in df["Mission"].unique():
-            mission_data = df[df["Mission"] == mission].sort_values("Annee")
-            if len(mission_data) > 1:
-                growth_rate = calculate_growth_rate(
-                    mission_data["Montant"].iloc[0],
-                    mission_data["Montant"].iloc[-1],
-                    len(mission_data) - 1,
+                fig = px.line(
+                    df,
+                    x="Annee",
+                    y="Montant",
+                    color="Mission",
+                    title="Evolution des Comptes de Bilan",
+                    labels={"Montant": montant_label, "Annee": "Annee"},
                 )
-                growth_data.append(
-                    {
-                        "Mission": mission,
-                        "Croissance Annuelle (%)": growth_rate,
-                        "Variation Totale (%)": (
-                            (
-                                mission_data["Montant"].iloc[-1]
-                                - mission_data["Montant"].iloc[0]
-                            )
-                            / mission_data["Montant"].iloc[0]
-                        )
-                        * 100,
-                    }
+                fig.update_layout(height=600, hovermode="x unified")
+                fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2))
+                add_period_overlays(fig, GOVERNMENT_PERIODS, earliest_year, latest_year)
+                add_event_markers(fig, KEY_EVENTS, earliest_year, latest_year)
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Total evolution
+                total_df = df.groupby("Annee", as_index=False)["Montant"].sum()
+                fig_total = px.line(
+                    total_df,
+                    x="Annee",
+                    y="Montant",
+                    title="Evolution du Total Bilan",
+                    labels={"Montant": montant_label},
                 )
+                fig_total.update_layout(height=400)
+                st.plotly_chart(fig_total, use_container_width=True)
 
-        growth_df = pd.DataFrame(growth_data)
-        if not growth_df.empty:
-            growth_df["Mission"] = growth_df["Mission"].str.split("(").str[0].str.strip()
-
-            growth_df = growth_df.sort_values(
-                "Croissance Annuelle (%)", ascending=False
-            )
-
-            fig_growth = px.bar(
-                growth_df,
-                x="Mission",
-                y="Croissance Annuelle (%)",
-                title=translate(
-                    "title.growth_rate",
-                    current_lang,
-                    "Taux de Croissance Annuel Moyen par Mission",
-                ),
-                color="Croissance Annuelle (%)",
-                color_continuous_scale="RdYlBu_r",
-            )
-            fig_growth.update_xaxes(tickangle=45)
-            fig_growth.update_layout(height=500)
-            st.plotly_chart(fig_growth, use_container_width=True)
-
-        # Total budget evolution (all missions)
-        st.subheader(
-            translate(
-                "title.total_budget",
-                current_lang,
-                "Évolution du Budget Total de l'État",
-            )
-        )
-        total_df = df.groupby("Annee", as_index=False)["Montant"].sum()
-        fig_total = px.line(
-            total_df,
-            x="Annee",
-            y="Montant",
-            title="Évolution du Budget Total",
-            labels={"Montant": montant_label, "Annee": "Annee"},
-        )
-        fig_total.update_layout(height=400, hovermode="x unified")
-        add_period_overlays(
-            fig_total,
-            government_periods,
-            int(df["Annee"].min()),
-            int(df["Annee"].max()),
-        )
-        add_event_markers(
-            fig_total, key_events, int(df["Annee"].min()), int(df["Annee"].max())
-        )
-        st.plotly_chart(fig_total, use_container_width=True)
-
-    with tab2:
-        st.subheader(
-            translate(
-                "header.compare", current_lang, "Comparaison des Missions Budgétaires"
-            )
-        )
-        st.markdown(
-            translate(
-                "analysis.compare",
-                current_lang,
-                "Comparez les missions pour une année donnée afin d'identifier les postes les plus importants et leurs poids relatifs.",
-            )
-        )
-
-        # Select year for comparison
-        comparison_year = st.selectbox(
-            "Annee de comparaison", sorted(df["Annee"].unique(), reverse=True)
-        )
-
-        year_data = df[df["Annee"] == comparison_year].copy()
-        year_data = year_data.sort_values("Montant", ascending=True)
-
-        # Horizontal bar chart
-        fig_comparison = px.bar(
-            year_data,
-            x="Montant",
-            y="Mission",
-            orientation="h",
-            title=translate(
-                "title.comparison", current_lang, "Répartition des Dépenses par Mission"
-            )
-            + f" - {comparison_year}",
-            labels={"Montant": montant_label, "Mission": "Mission"},
-            text="Montant",
-        )
-        fig_comparison.update_traces(
-            texttemplate="%{text:.1f}B€", textposition="outside"
-        )
-        fig_comparison.update_layout(height=600)
-        st.plotly_chart(fig_comparison, use_container_width=True)
-
-        # Percentage breakdown
-        year_data["Pourcentage"] = (
-            year_data["Montant"] / year_data["Montant"].sum()
-        ) * 100
-        st.subheader(f"Répartition en Pourcentage - {comparison_year}")
-
-        year_data["Mission"] = year_data["Mission"].str.split("(").str[0].str.strip()
-        
-        # Pie chart
-        fig_pie = px.pie(
-            year_data,
-            values="Montant",
-            names="Mission",
-            title="Répartition du Budget par Mission",
-        )
-        fig_pie.update_traces(textposition="inside", textinfo="percent+label")
-        fig_pie.update_layout(
-            height=500,
-            legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.3,  # Adjusted to move the legend further down
-            xanchor="center",
-            x=0.5
-            )
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-        # Dataframe below the pie chart
-        st.dataframe(
-            year_data[["Mission", "Montant", "Pourcentage"]].round(2),
-            use_container_width=True,
-        )
-
-    with tab3:
-        st.subheader(
-            translate(
-                "header.split", current_lang, "Analyse de la Répartition Budgétaire"
-            )
-        )
-        st.markdown(
-            translate(
-                "analysis.split",
-                current_lang,
-                "Les aires empilées montrent l'évolution de la composition du budget au fil des années.",
-            )
-        )
-
-        # Stacked area chart
-        pivot_df = df.pivot(index="Annee", columns="Mission", values="Montant").fillna(
-            0
-        )
-
-        fig_stacked = go.Figure()
-        for mission in pivot_df.columns:
-            fig_stacked.add_trace(
-                go.Scatter(
-                    x=pivot_df.index,
-                    y=pivot_df[mission],
-                    stackgroup="one",
-                    name=mission,
-                    mode="lines",
-                    line=dict(width=0.5),
-                    fillcolor=px.colors.qualitative.Set3[
-                        hash(mission) % len(px.colors.qualitative.Set3)
-                    ],
+            with tab2:
+                st.subheader("Comparaison des Comptes")
+                comparison_year = st.selectbox(
+                    "Annee",
+                    sorted(df["Annee"].unique(), reverse=True),
+                    key="balance_compare_year",
                 )
-            )
+                year_data = df[df["Annee"] == comparison_year].sort_values("Montant", ascending=True)
 
-        fig_stacked.update_layout(
-            title=translate(
-                "title.stacked_area",
-                current_lang,
-                "Évolution de la Répartition Budgétaire (Aires Empilées)",
-            ),
-            xaxis_title="Annee",
-            yaxis_title=montant_label,
-            height=600,
-            hovermode="x unified",
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.3,  # Position the legend below the graph
-                xanchor="center",
-                x=0.5,
-            ),
-        )
-        add_period_overlays(
-            fig_stacked,
-            government_periods,
-            int(df["Annee"].min()),
-            int(df["Annee"].max()),
-        )
-        add_event_markers(
-            fig_stacked, key_events, int(df["Annee"].min()), int(df["Annee"].max())
-        )
-        st.plotly_chart(fig_stacked, use_container_width=True)
-
-        # Percentage evolution
-        pivot_pct = pivot_df.div(pivot_df.sum(axis=1), axis=0) * 100
-
-        fig_pct = go.Figure()
-        for mission in pivot_pct.columns:
-            fig_pct.add_trace(
-                go.Scatter(
-                    x=pivot_pct.index,
-                    y=pivot_pct[mission],
-                    stackgroup="one",
-                    name=mission,
-                    mode="lines",
-                    line=dict(width=0.5),
-                )
-            )
-
-        fig_pct.update_layout(
-            title=translate(
-                "title.percentage_evolution",
-                current_lang,
-                "Évolution de la Répartition Budgétaire (Pourcentages)",
-            ),
-            xaxis_title="Annee",
-            yaxis_title="Pourcentage (%)",
-            height=600,
-            hovermode="x unified",
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.3,  # Position the legend below the graph
-                xanchor="center",
-                x=0.5,
-            ),
-        )
-        st.plotly_chart(fig_pct, use_container_width=True)
-
-    with tab4:
-        st.subheader(
-            "🔮 "
-            + translate(
-                "header.pred", current_lang, "Prédictions Budgétaires 2026-2030"
-            )
-        )
-        st.markdown(
-            translate(
-                "analysis.pred",
-                current_lang,
-                "Les prédictions prolongent les tendances récentes avec des contraintes.",
-            )
-        )
-
-        if predictions_df is not None and not predictions_df.empty:
-            # Combine historical and predicted data
-            historical_df = df.copy()
-            historical_df["Type"] = "Historique"
-            historical_df["Montant_Predit"] = historical_df["Montant"]
-
-            pred_df = predictions_df.copy()
-            pred_df["Type"] = "Prédit"
-            pred_df["Montant"] = pred_df["Montant_Predit"]
-
-            combined_df = pd.concat([historical_df, pred_df], ignore_index=True)
-
-            # Interactive prediction chart
-            fig_pred = px.line(
-                combined_df,
-                x="Annee",
-                y="Montant_Predit",
-                color="Mission",
-                line_dash="Type",
-                title=translate(
-                    "title.history_predictions",
-                    current_lang,
-                    "Évolution Historique et Prédictions Budgétaires",
-                ),
-                labels={
-                    "Montant_Predit": montant_label,
-                    "Annee": "Annee",
-                    "Mission": "Mission",
-                    "Type": "Type de Données",
-                },
-            )
-
-            # Add vertical line to separate historical and predicted data
-            fig_pred.add_vline(
-                x=2024.5,
-                line_dash="dash",
-                line_color="red",
-                annotation_text="Limite Historique/Prédiction",
-            )
-
-            fig_pred.update_layout(
-                height=600,
-                hovermode="x unified",
-                legend=dict(
+                fig_bar = px.bar(
+                    year_data,
+                    x="Montant",
+                    y="Mission",
                     orientation="h",
-                    yanchor="top",
-                    y=-0.4,  # Position the legend below the graph
-                    xanchor="center",
-                    x=0.5,
-                ),
-            )
-            add_period_overlays(
-                fig_pred,
-                government_periods,
-                int(combined_df["Annee"].min()),
-                int(combined_df["Annee"].max()),
-            )
-            add_event_markers(
-                fig_pred,
-                key_events,
-                int(combined_df["Annee"].min()),
-                int(combined_df["Annee"].max()),
-            )
-            st.plotly_chart(fig_pred, use_container_width=True)
-
-            # Prediction summary
-            st.subheader(
-                translate(
-                    "header.pred_summary", current_lang, "Résumé des Prédictions 2030"
+                    title=f"Repartition - {comparison_year}",
+                    labels={"Montant": montant_label},
                 )
-            )
+                fig_bar.update_layout(height=600)
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-            pred_2030 = predictions_df[predictions_df["Annee"] == 2030]
-            hist_2024 = df[df["Annee"] == 2024]
+            with tab3:
+                st.subheader("Repartition du Bilan")
+                pivot_df = df.pivot(index="Annee", columns="Mission", values="Montant").fillna(0)
 
-            summary_data = []
-            for mission in pred_2030["Mission"].unique():
-                pred_value = pred_2030[pred_2030["Mission"] == mission][
-                    "Montant_Predit"
-                ].iloc[0]
-                hist_value = (
-                    hist_2024[hist_2024["Mission"] == mission]["Montant"].iloc[0]
-                    if mission in hist_2024["Mission"].values
-                    else 0
+                fig_stack = go.Figure()
+                for mission in pivot_df.columns:
+                    fig_stack.add_trace(
+                        go.Scatter(
+                            x=pivot_df.index,
+                            y=pivot_df[mission],
+                            stackgroup="one",
+                            name=mission,
+                            mode="lines",
+                        )
+                    )
+                fig_stack.update_layout(
+                    title="Evolution de la Repartition",
+                    height=600,
+                    legend=dict(orientation="h", yanchor="top", y=-0.2),
                 )
+                st.plotly_chart(fig_stack, use_container_width=True)
 
-                if hist_value > 0:
-                    growth = ((pred_value - hist_value) / hist_value) * 100
-                else:
-                    growth = 0
+    # =============================================================================
+    # EXPENSES VIEW (Account 6)
+    # =============================================================================
+    elif selected_view == "expenses":
+        df = st.session_state.budget_data
+        predictions_df = st.session_state.predictions
 
-                summary_data.append(
-                    {
-                        "Mission": mission,
-                        "Budget 2024 (Milliards €)": round(hist_value, 2),
-                        "Prédiction 2030 (Milliards €)": round(pred_value, 2),
-                        "Croissance Prédite (%)": round(growth, 1),
-                        "Variation (Milliards €)": round(pred_value - hist_value, 2),
-                    }
-                )
-
-            summary_df = pd.DataFrame(summary_data)
-            summary_df = summary_df.sort_values(
-                "Croissance Prédite (%)", ascending=False
-            )
-
-            st.dataframe(summary_df, use_container_width=True)
-
+        if df is None or df.empty:
+            st.warning("Aucune donnee de depenses disponible. Cliquez sur 'Charger les donnees'.")
         else:
-            st.warning("⚠️ Prédictions en cours de génération. Veuillez patienter...")
+            df, montant_label = apply_inflation_adjustment(df)
 
-    with tab5:
-        st.subheader(
-            "📋 "
-            + translate(
-                "header.details_export", current_lang, "Analyse Détaillée et Export"
-            )
-        )
-        st.markdown(
-            translate(
-                "analysis.details",
-                current_lang,
-                "Utilisez le résumé et les tableaux de croissance pour approfondir les déterminants.",
-            )
-        )
-        # Localized insights
-        insights_msgs = generate_insights_i18n(df, predictions_df, current_lang)
-        for msg in insights_msgs:
-            st.markdown("- " + msg)
-        # Data sources section
-        st.markdown("---")
-        st.subheader(
-            translate(
-                "sources.title", current_lang, "📚 Sources de Données et Références"
-            )
-        )
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(
-                translate(
-                    "sources.budget",
-                    current_lang,
-                    "**Données Budgétaires** : Missions du budget de l'État français depuis data.gouv.fr",
-                )
-            )
-            st.markdown(
-                translate(
-                    "sources.cpi",
-                    current_lang,
-                    "**Données d'Inflation** : Indice des Prix à la Consommation (IPC) de l'INSEE",
-                )
-            )
-        with col2:
-            st.markdown(
-                translate(
-                    "sources.debt",
-                    current_lang,
-                    "**Intérêts de la Dette** : Paiements d'intérêts de la dette publique modélisés",
-                )
-            )
-            st.markdown(
-                translate(
-                    "sources.methodology",
-                    current_lang,
-                    "**Méthodologie** : Traitement des données, ajustement inflationniste et prédictions",
-                )
-            )
-
-        st.markdown(
-            translate(
-                "sources.disclaimer",
-                current_lang,
-                "**Avertissement** : Cette analyse est à des fins d'information. Consultez les sources gouvernementales officielles pour les chiffres budgétaires officiels.",
-            )
-        )
-
-        # Links to official sources
-        st.markdown("**🔗 Official Sources:**")
-        st.markdown(
-            "- [data.gouv.fr - Budget de l'État](https://www.data.gouv.fr/fr/datasets/budget-de-letat/)"
-        )
-        st.markdown(
-            "- [INSEE - Indices des Prix](https://www.insee.fr/fr/statistiques/serie/000436391)"
-        )
-        st.markdown(
-            "- [Ministère de l'Économie - Finances Publiques](https://www.economie.gouv.fr/finances-publiques)"
-        )
-        st.markdown(
-            "- [Banque de France - Dette Publique](https://www.banque-france.fr/statistiques/dette-publique)"
-        )
-
-        # Top growing categories
-        st.subheader(
-            "🚀 "
-            + translate(
-                "header.top_growth", current_lang, "Missions en Forte Croissance"
-            )
-        )
-
-        growth_analysis = []
-        for mission in df["Mission"].unique():
-            mission_data = df[df["Mission"] == mission].sort_values("Annee")
-            if len(mission_data) >= 2:
-                start_value = mission_data["Montant"].iloc[0]
-                end_value = mission_data["Montant"].iloc[-1]
-                total_growth = ((end_value - start_value) / start_value) * 100
-
-                growth_analysis.append(
-                    {
-                        "Mission": mission,
-                        "Montant Initial (Milliards €)": round(start_value, 2),
-                        "Montant Final (Milliards €)": round(end_value, 2),
-                        "Croissance Totale (%)": round(total_growth, 1),
-                        "Tendance": "📈" if total_growth > 0 else "📉",
-                    }
-                )
-
-        growth_analysis_df = pd.DataFrame(growth_analysis)
-        growth_analysis_df = growth_analysis_df.sort_values(
-            "Croissance Totale (%)", ascending=False
-        )
-
-        st.dataframe(growth_analysis_df, use_container_width=True)
-
-        # Statistical summary
-        st.subheader(
-            "📊 "
-            + translate("header.stats_summary", current_lang, "Résumé Statistique")
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.metric("Nombre de Missions Analysées", len(df["Mission"].unique()))
-            st.metric("Période d'Analyse", f"{df['Annee'].min()} - {df['Annee'].max()}")
-            st.metric("Points de Données", len(df))
-
-        with col2:
-            if not growth_analysis_df.empty:
-                best_performer = growth_analysis_df.iloc[0]
-                st.metric(
-                    "Meilleure Performance",
-                    best_performer["Mission"],
-                    f"+{best_performer['Croissance Totale (%)']}%",
-                )
-
-                worst_performer = growth_analysis_df.iloc[-1]
-                st.metric(
-                    "Performance la Plus Faible",
-                    worst_performer["Mission"],
-                    f"{worst_performer['Croissance Totale (%)']}%",
-                )
-
-        # Data export
-        st.subheader(
-            "💾 " + translate("export.header", current_lang, "Export des Données")
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            # Export historical data
-            csv_historical = df.to_csv(index=False, encoding="utf-8")
-            st.download_button(
-                label="📥 "
-                + translate(
-                    "button.download_historical",
-                    current_lang,
-                    "Télécharger Données Historiques (CSV)",
-                ),
-                data=csv_historical,
-                file_name=f"budget_france_historique_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-            )
-
-        with col2:
-            # Export predictions
-            if predictions_df is not None and not predictions_df.empty:
-                csv_predictions = predictions_df.to_csv(index=False, encoding="utf-8")
-                st.download_button(
-                    label="📥 "
-                    + translate(
-                        "button.download_predictions",
-                        current_lang,
-                        "Télécharger Prédictions (CSV)",
-                    ),
-                    data=csv_predictions,
-                    file_name=f"budget_france_predictions_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                )
-
-        with col3:
-            # Export analysis
-            if not growth_analysis_df.empty:
-                csv_analysis = growth_analysis_df.to_csv(index=False, encoding="utf-8")
-                st.download_button(
-                    label="📥 "
-                    + translate(
-                        "button.download_analysis",
-                        current_lang,
-                        "Télécharger Analyse (CSV)",
-                    ),
-                    data=csv_analysis,
-                    file_name=f"budget_france_analyse_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                )
-
-    # Add a new page for revenue evolution
-    with tab6:
-        st.title(
-            "📈 "
-            + translate(
-                "title.revenue_evolution",
-                current_lang,
-                "Évolution des Recettes de l'État Français",
-            )
-        )
-        st.markdown(
-            translate(
-                "desc.revenue_evolution",
-                current_lang,
-                "Cette page présente l'évolution des recettes de l'État français au cours des 20 dernières années.",
-            )
-        )
-
-        # Fetch revenue data
-        with st.spinner(
-            translate(
-                "loading.revenue_data",
-                current_lang,
-                "Chargement des données de recettes...",
-            )
-        ):
-            try:
+            # Add debt interest if requested
+            if include_debt_interest:
                 fetcher = DataFetcher()
-                revenue_data = fetcher.fetch_revenue_20y(start_year=year_range[0], end_year=year_range[1])
-            except Exception as e:
-                st.error(
-                    f"❌ "
-                    + translate(
-                        "error.revenue_data",
-                        current_lang,
-                        "Erreur lors du chargement des données de recettes",
+                debt_series = fetcher.get_debt_interest_series(
+                    int(df["Annee"].min()), int(df["Annee"].max())
+                )
+                debt_series["Mission"] = "Charge de la dette"
+                df = pd.concat([df, debt_series[["Annee", "Mission", "Montant"]]], ignore_index=True)
+
+            # Key metrics
+            col1, col2, col3, col4 = st.columns(4)
+            latest_year = int(df["Annee"].max())
+            earliest_year = int(df["Annee"].min())
+            latest_total = df[df["Annee"] == latest_year]["Montant"].sum()
+            earliest_total = df[df["Annee"] == earliest_year]["Montant"].sum()
+            total_growth = ((latest_total - earliest_total) / earliest_total) * 100 if earliest_total else 0
+            avg_growth = total_growth / (latest_year - earliest_year) if latest_year > earliest_year else 0
+
+            with col1:
+                st.metric(f"Depenses {latest_year}", format_currency(latest_total))
+            with col2:
+                st.metric("Croissance annuelle", f"{avg_growth:.1f}%")
+            with col3:
+                top_cat = get_top_categories(df, n=1)
+                if not top_cat.empty:
+                    st.metric("Plus grosse mission", top_cat.iloc[0]["Mission"][:20])
+            with col4:
+                if predictions_df is not None and not predictions_df.empty:
+                    pred_2030 = predictions_df[predictions_df["Annee"] == 2030]["Montant_Predit"].sum()
+                    st.metric("Prediction 2030", format_currency(pred_2030))
+                else:
+                    st.metric("Prediction 2030", "N/A")
+
+            # Tabs for expenses analysis
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "Evolution",
+                "Comparaison",
+                "Repartition",
+                "Predictions",
+                "Analyse",
+            ])
+
+            with tab1:
+                st.subheader("Evolution des Depenses par Mission")
+
+                fig = px.line(
+                    df,
+                    x="Annee",
+                    y="Montant",
+                    color="Mission",
+                    title="Evolution des Depenses Budgetaires",
+                    labels={"Montant": montant_label},
+                )
+                fig.update_layout(height=600, hovermode="x unified")
+                fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2))
+                add_period_overlays(fig, GOVERNMENT_PERIODS, earliest_year, latest_year)
+                add_event_markers(fig, KEY_EVENTS, earliest_year, latest_year)
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Growth rate analysis
+                st.subheader("Taux de Croissance par Mission")
+                growth_data = []
+                for mission in df["Mission"].unique():
+                    m_data = df[df["Mission"] == mission].sort_values("Annee")
+                    if len(m_data) > 1:
+                        gr = calculate_growth_rate(
+                            m_data["Montant"].iloc[0],
+                            m_data["Montant"].iloc[-1],
+                            len(m_data) - 1,
+                        )
+                        growth_data.append({"Mission": mission, "Croissance (%)": gr})
+
+                if growth_data:
+                    growth_df = pd.DataFrame(growth_data).sort_values("Croissance (%)", ascending=False)
+                    fig_growth = px.bar(
+                        growth_df,
+                        x="Mission",
+                        y="Croissance (%)",
+                        color="Croissance (%)",
+                        color_continuous_scale="RdYlBu_r",
                     )
-                    + f": {str(e)}"
-                )
-                revenue_data = None
+                    fig_growth.update_xaxes(tickangle=45)
+                    fig_growth.update_layout(height=500)
+                    st.plotly_chart(fig_growth, use_container_width=True)
 
-        if revenue_data is not None and not revenue_data.empty:
-            # Apply inflation adjustment if requested
-            if adjust_inflation:
-                revenue_data = adjust_to_constant_euros(
-                    revenue_data, cpi_df, base_year=base_year_choice, amount_col="Montant"
+            with tab2:
+                st.subheader("Comparaison des Missions")
+                comparison_year = st.selectbox(
+                    "Annee de comparaison",
+                    sorted(df["Annee"].unique(), reverse=True),
+                    key="expense_compare_year",
                 )
+                year_data = df[df["Annee"] == comparison_year].sort_values("Montant", ascending=True)
 
-            # Line chart for revenue evolution
-            st.subheader(
-                translate(
-                    "header.revenue_evolution",
-                    current_lang,
-                    "Évolution des Recettes Totales",
-                )
-            )
-            fig_revenue = px.line(
-                revenue_data,
-                x="Annee",
-                y="Montant",
-                color="Postes",
-                title=translate(
-                    "title.revenue_evolution_chart",
-                    current_lang,
-                    "Évolution des Recettes de l'État",
-                ),
-                labels={"Montant": montant_label, "Annee": "Annee", "Postes": "Catégorie de recettes"},
-            )
-            fig_revenue.update_layout(
-                height=600,
-                hovermode="x unified",
-                legend=dict(
+                fig_bar = px.bar(
+                    year_data,
+                    x="Montant",
+                    y="Mission",
                     orientation="h",
-                    yanchor="top",
-                    y=-0.3,  # Position the legend below the graph
-                    xanchor="center",
-                    x=0.5,
-                ),
-                legend_title="Catégories de recettes",
-            )
-            add_period_overlays(
-                fig_revenue,
-                government_periods,
-                int(revenue_data["Annee"].min()),
-                int(revenue_data["Annee"].max()),
-            )
-            add_event_markers(
-                fig_revenue,
-                key_events,
-                int(revenue_data["Annee"].min()),
-                int(revenue_data["Annee"].max()),
-            )
-            st.plotly_chart(fig_revenue, use_container_width=True)
+                    title=f"Repartition des Depenses - {comparison_year}",
+                )
+                fig_bar.update_layout(height=600)
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-            # Key metrics by revenue category (Postes)
-            latest_year = revenue_data["Annee"].max()
-            earliest_year = revenue_data["Annee"].min()
+                # Pie chart
+                year_data["Pourcentage"] = (year_data["Montant"] / year_data["Montant"].sum()) * 100
+                fig_pie = px.pie(year_data, values="Montant", names="Mission")
+                fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+                fig_pie.update_layout(height=500, showlegend=False)
+                st.plotly_chart(fig_pie, use_container_width=True)
 
-            latest_revenue_by_poste = (
-                revenue_data[revenue_data["Annee"] == latest_year]
-                .groupby("Postes")["Montant"]
-                .sum()
-            )
-            earliest_revenue_by_poste = (
-                revenue_data[revenue_data["Annee"] == earliest_year]
-                .groupby("Postes")["Montant"]
-                .sum()
-            )
+            with tab3:
+                st.subheader("Repartition Budgetaire")
+                pivot_df = df.pivot(index="Annee", columns="Mission", values="Montant").fillna(0)
 
-            # Combine for growth calculations
-            metrics_df = pd.DataFrame({
-                "Latest": latest_revenue_by_poste,
-                "Earliest": earliest_revenue_by_poste
-            }).fillna(0)
+                fig_stack = go.Figure()
+                for mission in pivot_df.columns:
+                    fig_stack.add_trace(
+                        go.Scatter(
+                            x=pivot_df.index,
+                            y=pivot_df[mission],
+                            stackgroup="one",
+                            name=mission,
+                            mode="lines",
+                        )
+                    )
+                fig_stack.update_layout(
+                    title="Evolution de la Repartition (Aires Empilees)",
+                    height=600,
+                    legend=dict(orientation="h", yanchor="top", y=-0.2),
+                )
+                add_period_overlays(fig_stack, GOVERNMENT_PERIODS, earliest_year, latest_year)
+                st.plotly_chart(fig_stack, use_container_width=True)
 
-            metrics_df["TotalGrowthPct"] = (
-                (metrics_df["Latest"] - metrics_df["Earliest"]) / metrics_df["Earliest"].replace(0, np.nan)
-            ) * 100
-            metrics_df["AvgAnnualGrowthPct"] = metrics_df["TotalGrowthPct"] / (latest_year - earliest_year)
+                # Percentage version
+                pivot_pct = pivot_df.div(pivot_df.sum(axis=1), axis=0) * 100
+                fig_pct = go.Figure()
+                for mission in pivot_pct.columns:
+                    fig_pct.add_trace(
+                        go.Scatter(
+                            x=pivot_pct.index,
+                            y=pivot_pct[mission],
+                            stackgroup="one",
+                            name=mission,
+                        )
+                    )
+                fig_pct.update_layout(
+                    title="Evolution en Pourcentage",
+                    height=600,
+                    yaxis_title="Pourcentage (%)",
+                    legend=dict(orientation="h", yanchor="top", y=-0.2),
+                )
+                st.plotly_chart(fig_pct, use_container_width=True)
 
-            # Display metrics in 3 rows
-            st.subheader(f"Évolution par catégorie ({earliest_year} → {latest_year})")
-            rows = [metrics_df.iloc[i:i+4] for i in range(0, len(metrics_df), 4)]
+            with tab4:
+                st.subheader("Predictions Budgetaires 2025-2030")
 
-            for row_group in rows:
-                cols = st.columns(len(row_group))
-                for (poste, row), col in zip(row_group.iterrows(), cols):
-                    with col:
-                        st.metric(
-                            f"{poste} {latest_year}",
-                            format_currency(row['Latest']),
-                            f"{row['TotalGrowthPct']:.1f}% depuis {earliest_year} | {row['AvgAnnualGrowthPct']:.1f}%/an"
+                if predictions_df is not None and not predictions_df.empty:
+                    # Combine historical and predicted
+                    hist_df = df.copy()
+                    hist_df["Type"] = "Historique"
+                    hist_df["Montant_Predit"] = hist_df["Montant"]
+
+                    pred_df = predictions_df.copy()
+                    pred_df["Type"] = "Prediction"
+                    pred_df["Montant"] = pred_df["Montant_Predit"]
+
+                    combined = pd.concat([hist_df, pred_df], ignore_index=True)
+
+                    fig_pred = px.line(
+                        combined,
+                        x="Annee",
+                        y="Montant_Predit",
+                        color="Mission",
+                        line_dash="Type",
+                        title="Historique et Predictions",
+                    )
+                    fig_pred.add_vline(x=2024.5, line_dash="dash", line_color="red")
+                    fig_pred.update_layout(height=600, legend=dict(orientation="h", y=-0.3))
+                    st.plotly_chart(fig_pred, use_container_width=True)
+
+                    # Summary table
+                    st.subheader("Resume des Predictions 2030")
+                    pred_2030 = predictions_df[predictions_df["Annee"] == 2030]
+                    summary = []
+                    for mission in pred_2030["Mission"].unique():
+                        pred_val = pred_2030[pred_2030["Mission"] == mission]["Montant_Predit"].iloc[0]
+                        hist_2024 = df[(df["Mission"] == mission) & (df["Annee"] == latest_year)]
+                        hist_val = hist_2024["Montant"].iloc[0] if not hist_2024.empty else 0
+                        growth = ((pred_val - hist_val) / hist_val * 100) if hist_val > 0 else 0
+                        summary.append({
+                            "Mission": mission,
+                            f"Budget {latest_year}": round(hist_val, 2),
+                            "Prediction 2030": round(pred_val, 2),
+                            "Croissance (%)": round(growth, 1),
+                        })
+                    st.dataframe(pd.DataFrame(summary).sort_values("Croissance (%)", ascending=False))
+                else:
+                    st.warning("Selectionnez 2024 comme annee de fin pour generer des predictions.")
+
+            with tab5:
+                st.subheader("Analyse Detaillee")
+                insights = generate_insights_i18n(df, predictions_df, current_lang)
+                for msg in insights:
+                    st.markdown(f"- {msg}")
+
+                st.markdown("---")
+                st.subheader("Export des Donnees")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        "Telecharger Historique (CSV)",
+                        df.to_csv(index=False),
+                        f"depenses_{datetime.now().strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                    )
+                with col2:
+                    if predictions_df is not None:
+                        st.download_button(
+                            "Telecharger Predictions (CSV)",
+                            predictions_df.to_csv(index=False),
+                            f"predictions_{datetime.now().strftime('%Y%m%d')}.csv",
+                            "text/csv",
                         )
 
-            # Add a total evolution metric
-            total_latest = metrics_df['Latest'].sum()
-            total_earliest = metrics_df['Earliest'].sum()
-            total_growth_pct = ((total_latest - total_earliest) / total_earliest) * 100
-            avg_annual_growth_pct = total_growth_pct / (latest_year - earliest_year)
+    # =============================================================================
+    # REVENUE VIEW (Account 7)
+    # =============================================================================
+    elif selected_view == "revenue":
+        df = st.session_state.revenue_data
 
-            st.subheader("Évolution Totale")
-            st.metric(
-                f"Total {latest_year}",
-                format_currency(total_latest),
-                f"{total_growth_pct:.1f}% depuis {earliest_year} | {avg_annual_growth_pct:.1f}%/an"
-            )
-
-            # Calculate recettes - dépenses
-            if st.session_state.data_loaded:
-                combined_data = revenue_data.groupby("Annee", as_index=False)["Montant"].sum()
-                combined_data = combined_data.rename(columns={"Montant": "Recettes"})
-                expense_data = df.groupby("Annee", as_index=False)["Montant"].sum()
-                # print(expense_data)
-                expense_data = expense_data.rename(columns={"Montant": "Dépenses"})
-                combined_data = pd.merge(combined_data, expense_data, on="Annee", how="inner")
-                combined_data["Recettes - Dépenses"] = combined_data["Recettes"] - combined_data["Dépenses"]
-
-                # Plot total recettes over time
-                st.subheader(
-                    translate(
-                        "header.total_revenue",
-                        current_lang,
-                        "Évolution des Recettes Totales",
-                    )
-                )
-                fig_total_revenue = px.line(
-                    combined_data,
-                    x="Annee",
-                    y="Recettes",
-                    title=translate(
-                        "title.total_revenue_chart",
-                        current_lang,
-                        "Évolution des Recettes Totales",
-                    ),
-                    labels={"Recettes": "Montant (Milliards €)", "Annee": "Annee"},
-                )
-                fig_total_revenue.update_layout(height=600, hovermode="x unified")
-                add_period_overlays(
-                    fig_total_revenue,
-                    government_periods,
-                    int(combined_data["Annee"].min()),
-                    int(combined_data["Annee"].max()),
-                )
-                add_event_markers(
-                    fig_total_revenue,
-                    key_events,
-                    int(combined_data["Annee"].min()),
-                    int(combined_data["Annee"].max()),
-                )
-                st.plotly_chart(fig_total_revenue, use_container_width=True)
-
-                # Plot recettes - dépenses evolution
-                st.subheader(
-                    translate(
-                        "header.revenue_expense_diff",
-                        current_lang,
-                        "Évolution de Recettes - Dépenses",
-                    )
-                )
-                fig_diff = px.line(
-                    combined_data,
-                    x="Annee",
-                    y="Recettes - Dépenses",
-                    title=translate(
-                        "title.revenue_expense_diff_chart",
-                        current_lang,
-                        "Évolution de Recettes - Dépenses",
-                    ),
-                    labels={"Recettes - Dépenses": "Montant (Milliards €)", "Annee": "Annee"},
-                )
-                fig_diff.update_layout(height=600, hovermode="x unified")
-                add_period_overlays(
-                    fig_diff,
-                    government_periods,
-                    int(combined_data["Annee"].min()),
-                    int(combined_data["Annee"].max()),
-                )
-                add_event_markers(
-                    fig_diff,
-                    key_events,
-                    int(combined_data["Annee"].min()),
-                    int(combined_data["Annee"].max()),
-                )
-                st.plotly_chart(fig_diff, use_container_width=True)
-            else:
-                st.warning(
-                    "⚠️ "
-                    + translate(
-                        "warning.no_expense_data",
-                        current_lang,
-                        "Aucune donnée de dépenses disponible pour calculer Recettes - Dépenses.",
-                    )
-                )
+        if df is None or df.empty:
+            st.warning("Aucune donnee de recettes disponible. Cliquez sur 'Charger les donnees'.")
         else:
-            st.warning(
-                "⚠️ "
-                + translate(
-                    "warning.no_revenue_data",
-                    current_lang,
-                    "Aucune donnée de recettes disponible.",
-                )
-            )
+            df, montant_label = apply_inflation_adjustment(df)
 
+            # Key metrics
+            col1, col2, col3 = st.columns(3)
+            latest_year = int(df["Annee"].max())
+            earliest_year = int(df["Annee"].min())
+            latest_total = df[df["Annee"] == latest_year]["Montant"].sum()
+            earliest_total = df[df["Annee"] == earliest_year]["Montant"].sum()
+            total_growth = ((latest_total - earliest_total) / earliest_total) * 100 if earliest_total else 0
+
+            with col1:
+                st.metric(f"Recettes {latest_year}", format_currency(latest_total))
+            with col2:
+                st.metric("Evolution", f"{total_growth:.1f}%", f"depuis {earliest_year}")
+            with col3:
+                st.metric("Categories", len(df["Mission"].unique()))
+
+            # Tabs for revenue analysis
+            tab1, tab2, tab3 = st.tabs([
+                "Evolution",
+                "Comparaison",
+                "Recettes vs Depenses",
+            ])
+
+            with tab1:
+                st.subheader("Evolution des Recettes")
+
+                fig = px.line(
+                    df,
+                    x="Annee",
+                    y="Montant",
+                    color="Mission",
+                    title="Evolution des Recettes de l'Etat",
+                    labels={"Montant": montant_label},
+                )
+                fig.update_layout(height=600, hovermode="x unified")
+                fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.2))
+                add_period_overlays(fig, GOVERNMENT_PERIODS, earliest_year, latest_year)
+                add_event_markers(fig, KEY_EVENTS, earliest_year, latest_year)
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Total evolution
+                total_df = df.groupby("Annee", as_index=False)["Montant"].sum()
+                fig_total = px.line(
+                    total_df,
+                    x="Annee",
+                    y="Montant",
+                    title="Recettes Totales",
+                )
+                fig_total.update_layout(height=400)
+                st.plotly_chart(fig_total, use_container_width=True)
+
+            with tab2:
+                st.subheader("Comparaison des Categories de Recettes")
+                comparison_year = st.selectbox(
+                    "Annee",
+                    sorted(df["Annee"].unique(), reverse=True),
+                    key="revenue_compare_year",
+                )
+                year_data = df[df["Annee"] == comparison_year].sort_values("Montant", ascending=True)
+
+                fig_bar = px.bar(
+                    year_data,
+                    x="Montant",
+                    y="Mission",
+                    orientation="h",
+                    title=f"Repartition des Recettes - {comparison_year}",
+                )
+                fig_bar.update_layout(height=600)
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+                # Pie chart
+                fig_pie = px.pie(year_data, values="Montant", names="Mission")
+                fig_pie.update_traces(textposition="inside", textinfo="percent+label")
+                fig_pie.update_layout(height=500, showlegend=False)
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            with tab3:
+                st.subheader("Recettes vs Depenses")
+
+                # Load expenses data if not already loaded
+                expense_df = st.session_state.budget_data
+                if expense_df is None or expense_df.empty:
+                    st.info("Chargez d'abord les donnees de depenses pour voir la comparaison.")
+                    if st.button("Charger les depenses"):
+                        fetcher = DataFetcher()
+                        expense_df = fetcher.fetch_budget_data(
+                            start_year=year_range[0],
+                            end_year=year_range[1],
+                            base_compte="6",
+                            acc_level_range=1,
+                        )
+                        st.session_state.budget_data = expense_df
+                        st.rerun()
+                else:
+                    # Aggregate by year
+                    revenue_agg = df.groupby("Annee", as_index=False)["Montant"].sum()
+                    revenue_agg = revenue_agg.rename(columns={"Montant": "Recettes"})
+
+                    expense_agg = expense_df.groupby("Annee", as_index=False)["Montant"].sum()
+                    expense_agg = expense_agg.rename(columns={"Montant": "Depenses"})
+
+                    combined = pd.merge(revenue_agg, expense_agg, on="Annee", how="inner")
+                    combined["Solde"] = combined["Recettes"] - combined["Depenses"]
+
+                    # Line chart comparing both
+                    fig_compare = go.Figure()
+                    fig_compare.add_trace(
+                        go.Scatter(x=combined["Annee"], y=combined["Recettes"], name="Recettes", mode="lines+markers")
+                    )
+                    fig_compare.add_trace(
+                        go.Scatter(x=combined["Annee"], y=combined["Depenses"], name="Depenses", mode="lines+markers")
+                    )
+                    fig_compare.update_layout(
+                        title="Recettes vs Depenses",
+                        height=500,
+                        yaxis_title=montant_label,
+                    )
+                    st.plotly_chart(fig_compare, use_container_width=True)
+
+                    # Balance (deficit/surplus)
+                    fig_solde = px.bar(
+                        combined,
+                        x="Annee",
+                        y="Solde",
+                        title="Solde Budgetaire (Recettes - Depenses)",
+                        color="Solde",
+                        color_continuous_scale="RdYlGn",
+                    )
+                    fig_solde.update_layout(height=400)
+                    st.plotly_chart(fig_solde, use_container_width=True)
+
+                    # Summary metrics
+                    latest_solde = combined[combined["Annee"] == combined["Annee"].max()]["Solde"].iloc[0]
+                    avg_solde = combined["Solde"].mean()
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        status = "Excedent" if latest_solde > 0 else "Deficit"
+                        st.metric(f"Solde {int(combined['Annee'].max())}", format_currency(abs(latest_solde)), status)
+                    with col2:
+                        st.metric("Solde moyen", format_currency(abs(avg_solde)))
+
+
+# =============================================================================
 # Footer
+# =============================================================================
+
 st.markdown("---")
 st.markdown(
-    """
-<div style='text-align: center; color: #666; font-size: 0.8em;'>
-    <p>🏛️ Données officielles du gouvernement français | Sources: data.gouv.fr, INSEE, budget.gouv.fr</p>
-    <p>Dernière mise à jour: """
-    + datetime.now().strftime("%d/%m/%Y %H:%M")
-    + """</p>
-</div>
-""",
+    f"""
+    <div style='text-align: center; color: #666; font-size: 0.8em;'>
+    <p>Budget Horizon | Donnees: data.economie.gouv.fr</p>
+    <p>Derniere mise a jour: {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
