@@ -210,7 +210,7 @@ class DataFetcher:
 
         # Map account codes to mission names
         df["Mission"] = df["compte"].map(
-            lambda x: self.COMPTES.get(x, f"Compte inconnu: {x}")
+            lambda x: f"{x} - {self.COMPTES.get(x)}" if x in self.COMPTES.keys() else f"Compte inconnu: {x}"
         )
 
         # Select and aggregate
