@@ -51,9 +51,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/BudgetHorizon"
-Repository = "https://github.com/yourusername/BudgetHorizon"
-Documentation = "https://github.com/yourusername/BudgetHorizon#readme"
+Homepage = "https://github.com/yannklein/france-budget-analysis"
+Repository = "https://github.com/yannklein/france-budget-analysis"
+Documentation = "https://github.com/yannklein/france-budget-analysis#readme"
 
 [build-system]
 requires = ["hatchling"]
