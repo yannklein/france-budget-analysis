@@ -55,7 +55,6 @@ BudgetHorizon/
 ├── utils.py            # Utility functions and i18n
 ├── account_name.json   # French accounting code mappings
 ├── requirements.txt    # Python dependencies
-├── pyproject.toml      # Project metadata and tool config
 ├── .streamlit/
 │   └── config.toml     # Streamlit configuration
 └── README.md
