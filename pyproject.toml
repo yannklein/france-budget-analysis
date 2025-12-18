@@ -1,5 +1,5 @@
 [project]
-name = "france_budget_analysis"
+name = "france-budget-analysis"
 version = "1.0.0"
 description = "Interactive French government budget analysis with AI-powered predictions"
 readme = "README.md"
